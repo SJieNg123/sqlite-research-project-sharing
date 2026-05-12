@@ -1,0 +1,13 @@
+experiment,n_prefetch,syscall_count,prefetch_time_us,first_query_latency_us,avg_latency_us,improvement_pct
+baseline,0,0,0,73.06,5.86,0
+prefetch_range,92,87,2242.10,53.59,5.91,-26.6
+prefetch_perpage,92,92,2934.13,47.97,5.79,-34.3
+layers_1,1,1,34.67,38.12,5.50,-47.8
+layers_5,5,5,94.19,33.44,5.89,-54.2
+layers_10,10,10,272.77,44.36,5.68,-39.3
+layers_20,20,20,607.16,34.63,5.56,-52.6
+layers_46,46,46,1173.09,40.52,6.00,-44.6
+layers_92,92,92,2229.17,50.24,6.51,-31.3
+vacuum_prefetch5,5,5,168.02,66.19,6.46,-9.4
+prefetch_range_residency,92,87,3068,53.59,5.91,-26.6,91/92
+prefetch_perpage_residency,92,92,2569,47.97,5.79,-34.3,91/92

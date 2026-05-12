@@ -1,0 +1,12 @@
+page_size=4096  page_count=25613  first_freelist_trunk=0  freelist_total=0
+
+=== Classification summary ===
+Total pages:    25613
+Interior:       85 (0.33%)
+  interior_table: 51
+  interior_index: 34
+Leaf:           25528 (99.67%)
+  leaf_table:     19984
+  leaf_index:     5544
+Freelist:       0 (0.00%)
+Overflow/other: 0 (0.00%)
