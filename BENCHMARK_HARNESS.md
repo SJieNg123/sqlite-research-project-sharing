@@ -30,10 +30,11 @@
 6. 依照設定，在 cold advice 前或後開啟 SQLite connection / 初始化 schema。
 7. 記錄 cold advice 前的 SQLite page residency。
 8. 對 database mapping 執行 cold advice。
-9. 記錄 cold advice 後的 SQLite page residency。
-10. 逐筆執行 workload operation，記錄 latency 與 fault delta。
-11. 輸出整體 benchmark summary。
-12. 記錄 benchmark 結束後的 SQLite page residency。
+9. 若指定 `--drop-caches-script`，呼叫 root helper 執行 `sync` 與 `/proc/sys/vm/drop_caches`。
+10. 記錄 cold advice / drop-caches 後的 SQLite page residency。
+11. 逐筆執行 workload operation，記錄 latency 與 fault delta。
+12. 輸出整體 benchmark summary。
+13. 記錄 benchmark 結束後的 SQLite page residency。
 
 ## 輸入
 
@@ -62,6 +63,9 @@
 | `--output` | `benchmark_harness_operations.csv` | per-operation CSV 輸出 |
 | `--record-dir` | `benchmark_harness_runs` | run record log 目錄 |
 | `--mmap-size` | database file size | SQLite `PRAGMA mmap_size` 目標值 |
+| `--drop-caches-script` | 無 | 可選的 root helper，用來真正 drop Linux page cache |
+| `--drop-caches-use-sudo` | off | 用 `sudo -n` 執行 `--drop-caches-script`，讓 harness 本身維持非 root |
+| `--post-cold-script` | 無 | 可選 helper，在 cold/drop-caches 後、query 前執行 |
 | `--cold-advice` | `dontneed` | cold advice 模式 |
 | `--sqlite-open-timing` | `before-cold` | SQLite connection 開啟時機 |
 | `--schema-init-timing` | `before-cold` | schema / prepared statements 初始化時機 |
@@ -98,11 +102,48 @@ READMODIFYWRITE 321
 
 | 模式 | 行為 |
 | --- | --- |
+| `none` | 不執行 `madvise()` 或 drop-caches，用目前 cache 狀態直接量測 |
 | `cold` | 使用 `MADV_COLD` |
 | `pageout` | 使用 `MADV_COLD` 後再使用 `MADV_PAGEOUT` |
 | `dontneed` | 使用 `MADV_COLD`、`MADV_PAGEOUT`，再使用 `MADV_DONTNEED` |
 
 這些 API 是 kernel hint，不是絕對保證。實際有多少 page 被移出 resident set，要看 run record 裡 cold advice 前後的 residency 結果。
+
+若要做更接近真正冷啟動的 Linux 測試，可以搭配 repo 內的 `drop_caches.sh`：
+
+```sh
+chmod +x drop_caches.sh
+
+./benchmark_harness \
+  --workload generated_workloads/workloadc.txt \
+  --drop-caches-script /usr/local/bin/dropcache.sh \
+  --drop-caches-use-sudo
+```
+
+`drop_caches.sh` 裡面不含 `sudo`。若指定 `--drop-caches-use-sudo`，harness 會用 `sudo -n` 呼叫該 helper；sudoers 只需要允許這個 helper，例如：
+
+```text
+user ALL=(root) NOPASSWD: /usr/local/bin/dropcache.sh
+```
+
+若不指定 `--drop-caches-use-sudo`，harness 會直接執行 helper，適合 root shell 或其他外層 privilege wrapper。
+
+`--post-cold-script` 會在 drop cache 成功後、正式 workload 前執行，適合放 prefetch 和 residency-before 檢查。
+
+若由外層 orchestration script 負責 cold start 和 prefetch，可以使用 `--cold-advice none`，讓 harness 只量測當下 cache 狀態的 query latency。
+
+## Memory-Limited cgroup
+
+若要用 cgroup 限制記憶體，可以用 systemd user scope 包住 benchmark：
+
+```sh
+systemd-run --user --scope -p MemoryMax=512M \
+  ./benchmark_harness \
+  --db test.db \
+  --workload generated_workloads/workloadc.txt
+```
+
+如果實驗包含 prefetch，建議讓 prefetch 和 `benchmark_harness` 進同一個 memory-limited scope。`sqlite_prefetch_churn_experiment.py` 提供 `--systemd-memory-max`，會只限制每輪 cold-start measurement segment，不會限制寫入 churn 和 classifier。
 
 ## Debug Mode
 

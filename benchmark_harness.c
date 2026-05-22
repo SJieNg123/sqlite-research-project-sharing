@@ -29,11 +29,13 @@
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
 typedef enum {
-    COLD_ADVICE_COLD = 0,
+    COLD_ADVICE_NONE = 0,
+    COLD_ADVICE_COLD,
     COLD_ADVICE_PAGEOUT,
     COLD_ADVICE_DONTNEED
 } cold_advice_t;
@@ -74,6 +76,9 @@ typedef struct {
     const char *record_dir;
     const char *workload_path;
     int64_t mmap_size;
+    const char *drop_caches_script;
+    const char *post_cold_script;
+    bool drop_caches_use_sudo;
     cold_advice_t cold_advice;
     sqlite_open_timing_t sqlite_open_timing;
     schema_init_timing_t schema_init_timing;
@@ -130,12 +135,16 @@ static void usage(const char *prog) {
             "  --record-dir <dir>              Run record directory (default: benchmark_harness_runs).\n"
             "  --workload <file>               Pre-generated workload text file.\n"
             "  --mmap-size <bytes>             PRAGMA mmap_size target (default: file size).\n"
+            "  --drop-caches-script <file>     Run root-only helper after madvise to drop Linux page cache.\n"
+            "  --drop-caches-use-sudo          Run drop-cache helper via sudo -n.\n"
+            "  --post-cold-script <file>       Run helper after cold/drop-caches and before SQLite query setup.\n"
+            "  --cold-advice none              Do not run madvise/drop-caches; measure current cache state.\n"
             "  --cold-advice cold              Use MADV_COLD only.\n"
             "  --cold-advice pageout           Use MADV_COLD then MADV_PAGEOUT.\n"
             "  --cold-advice dontneed          Use MADV_COLD, MADV_PAGEOUT, then MADV_DONTNEED (default).\n"
             "  --sqlite-open-timing before-cold|after-cold    Default: before-cold.\n"
             "  --schema-init-timing before-cold|after-cold    Default: before-cold.\n"
-            "  --debug                         Print sync, madvise, and SQLite timing diagnostics.\n",
+            "  --debug                         Print sync, madvise, drop-caches, and SQLite timing diagnostics.\n",
             prog);
 }
 
@@ -187,9 +196,17 @@ static void parse_args(int argc, char **argv, options_t *opts) {
             opts->workload_path = argv[++i];
         } else if (strcmp(arg, "--mmap-size") == 0 && i + 1 < argc) {
             opts->mmap_size = parse_i64(argv[++i], "--mmap-size");
+        } else if (strcmp(arg, "--drop-caches-script") == 0 && i + 1 < argc) {
+            opts->drop_caches_script = argv[++i];
+        } else if (strcmp(arg, "--drop-caches-use-sudo") == 0) {
+            opts->drop_caches_use_sudo = true;
+        } else if (strcmp(arg, "--post-cold-script") == 0 && i + 1 < argc) {
+            opts->post_cold_script = argv[++i];
         } else if (strcmp(arg, "--cold-advice") == 0 && i + 1 < argc) {
             const char *mode = argv[++i];
-            if (strcmp(mode, "cold") == 0) {
+            if (strcmp(mode, "none") == 0) {
+                opts->cold_advice = COLD_ADVICE_NONE;
+            } else if (strcmp(mode, "cold") == 0) {
                 opts->cold_advice = COLD_ADVICE_COLD;
             } else if (strcmp(mode, "pageout") == 0) {
                 opts->cold_advice = COLD_ADVICE_PAGEOUT;
@@ -311,6 +328,8 @@ static const char *cold_advice_name(cold_advice_t advice) {
     switch (advice) {
         case COLD_ADVICE_COLD:
             return "cold";
+        case COLD_ADVICE_NONE:
+            return "none";
         case COLD_ADVICE_PAGEOUT:
             return "pageout";
         case COLD_ADVICE_DONTNEED:
@@ -710,6 +729,13 @@ static void run_madvise_step(const mapped_db_t *dbmap, int advice_flag,
 
 static void apply_cold_advice(const mapped_db_t *dbmap, cold_advice_t advice,
                               bool debug) {
+    if (advice == COLD_ADVICE_NONE) {
+        if (debug) {
+            fprintf(stderr, "cold advice disabled; skipping madvise steps\n");
+        }
+        return;
+    }
+
     run_madvise_step(dbmap, MADV_COLD, "MADV_COLD", debug);
 
     if (advice >= COLD_ADVICE_PAGEOUT) {
@@ -724,6 +750,83 @@ static void apply_cold_advice(const mapped_db_t *dbmap, cold_advice_t advice,
 
     if (advice >= COLD_ADVICE_DONTNEED) {
         run_madvise_step(dbmap, MADV_DONTNEED, "MADV_DONTNEED", debug);
+    }
+}
+
+static void run_helper_script(const char *script_path, const char *kind,
+                              bool use_sudo, bool debug, FILE *record) {
+    pid_t pid;
+    int status;
+
+    if (script_path == NULL) {
+        return;
+    }
+    if (script_path[0] == '\0') {
+        fprintf(stderr, "error: --%s path must not be empty\n", kind);
+        exit(1);
+    }
+    if (use_sudo && geteuid() == 0) {
+        use_sudo = false;
+    }
+
+    if (debug) {
+        fprintf(stderr, "running %s helper%s: %s\n", kind,
+                use_sudo ? " via sudo -n" : "", script_path);
+    }
+
+    pid = fork();
+    if (pid < 0) {
+        die_errno("fork(helper-script)");
+    }
+
+    if (pid == 0) {
+        if (use_sudo) {
+            char *const argv[] = {
+                (char *)"sudo",
+                (char *)"-n",
+                (char *)script_path,
+                NULL,
+            };
+            execvp("sudo", argv);
+            fprintf(stderr, "error: execvp(sudo -n %s) failed: errno=%d (%s)\n",
+                    script_path, errno, strerror(errno));
+        } else {
+            char *const argv[] = {(char *)script_path, NULL};
+            execv(script_path, argv);
+            fprintf(stderr, "error: execv(%s) failed: errno=%d (%s)\n",
+                    script_path, errno, strerror(errno));
+        }
+        _exit(127);
+    }
+
+    if (waitpid(pid, &status, 0) < 0) {
+        die_errno("waitpid(helper-script)");
+    }
+
+    if (WIFEXITED(status)) {
+        int code = WEXITSTATUS(status);
+        if (code != 0) {
+            fprintf(stderr,
+                    "error: %s helper failed%s with exit code %d: %s\n",
+                    kind, use_sudo ? " via sudo -n" : "", code, script_path);
+            exit(1);
+        }
+    } else if (WIFSIGNALED(status)) {
+        fprintf(stderr,
+                "error: %s helper%s was killed by signal %d: %s\n",
+                kind, use_sudo ? " via sudo -n" : "", WTERMSIG(status),
+                script_path);
+        exit(1);
+    } else {
+        fprintf(stderr, "error: %s helper%s ended unexpectedly: %s\n",
+                kind, use_sudo ? " via sudo -n" : "", script_path);
+        exit(1);
+    }
+
+    write_record_line(record, "%s_result=success\n", kind);
+    if (debug) {
+        fprintf(stderr, "%s helper%s succeeded: %s\n", kind,
+                use_sudo ? " via sudo -n" : "", script_path);
     }
 }
 
@@ -1120,6 +1223,14 @@ int main(int argc, char **argv) {
     write_record_line(record, "output=%s\n", output_path);
     write_record_line(record, "cold_advice=%s\n",
                       cold_advice_name(opts.cold_advice));
+    write_record_line(record, "drop_caches_script=%s\n",
+                      opts.drop_caches_script != NULL ?
+                      opts.drop_caches_script : "(none)");
+    write_record_line(record, "drop_caches_use_sudo=%s\n",
+                      opts.drop_caches_use_sudo ? "true" : "false");
+    write_record_line(record, "post_cold_script=%s\n",
+                      opts.post_cold_script != NULL ?
+                      opts.post_cold_script : "(none)");
     write_record_line(record, "sqlite_open_timing=%s\n",
                       opts.sqlite_open_timing == SQLITE_OPEN_BEFORE_COLD ?
                       "before-cold" : "after-cold");
@@ -1154,6 +1265,10 @@ int main(int argc, char **argv) {
 
     sync_db_pages(&dbmap, opts.debug);
     apply_cold_advice(&dbmap, opts.cold_advice, opts.debug);
+    run_helper_script(opts.drop_caches_script, "drop_caches_script",
+                      opts.drop_caches_use_sudo, opts.debug, record);
+    run_helper_script(opts.post_cold_script, "post_cold_script",
+                      false, opts.debug, record);
 
     if (opts.sqlite_open_timing == SQLITE_OPEN_AFTER_COLD) {
         sqlite_close_ctx(&sqlite_ctx);
