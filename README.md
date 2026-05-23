@@ -153,6 +153,12 @@ scatter 從 0.96 變 1.13（**更散**），prefetch 效益從 -54% 退化到 -9
 
 **第五個學到的教訓**：prefetch 在真實的、被使用過一段時間的 DB 上**仍然有效**，但 baseline 也變得更慢，所以絕對省的時間（μs）比百分比更值得看。
 
+> 📊 **想看跨實驗的策略矩陣與每個 workload 的最佳組合？** 看
+> [overall_results.md](overall_results.md)（結果）／
+> [overall_strategies.md](overall_strategies.md)（策略目錄）／
+> [overall_workloads.md](overall_workloads.md)（workload 定義）。
+> 下文 第 8–12 章 用故事方式串起這份資料。
+
 ### 第 8 章：54% 跟 10% 看起來矛盾，其實不矛盾
 
 ```
@@ -176,29 +182,113 @@ prefetch_churn:   6,892 µs → 6,300 µs 省 592 µs (-10%)  ← uniform worklo
 
 百分比看起來低不是 prefetch 沒用，是 baseline 本來就被「leaf 一定冷」拉高了。
 
-### 第 9 章：目前進度與下一步
+### 第 9 章：救回來了 — Type-aware VACUUM（`layout_rewriter/`）
+
+第 5 章的 cliffhanger：SQLite 內建 VACUUM 把 prefetch 效益從 -54% 打到 -9%。如果我們**自己寫一個 type-aware 的版本**，把 interior 全部排到檔頭，會發生什麼？
+
+`layout_rewriter/layout_rewriter.c` 直接讀 source DB、重寫一個新 DB，把所有 interior pages 排到 page 2–93（連續），leaves 排在後面。**整個過程不碰 SQLite source code，純粹操作 file format**。
+
+```
+scatter score:     0.96 (原始)   →  0.0001 (type-aware)
+                              ↓
+       和 SQLite VACUUM 的 1.13（更散）正好相反方向
+```
+
+跑同一組 prefetch 策略對照：
+
+| Layout | baseline | range | perpage | **layers_5** |
+|---|---:|---:|---:|---:|
+| 原始 | 318 µs | 370 µs (+16%) | 319 µs (+0%) | 224 µs (-30%) |
+| SQLite VACUUM | 333 µs | 330 µs (-1%) | 338 µs (+2%) | 234 µs (-30%) |
+| **Type-aware** | 404 µs | 387 µs (-4%) | 273 µs (-32%) | **127 µs (-69%)** ← 全局最佳 |
+
+**第六個學到的教訓**：type-aware VACUUM 不只**救回**了 prefetch 效益（第 5 章 -9% → 現在 -69%），還**超越**原始 layout 的 -54%。第 5 章的研究問題「能不能救回來」答案是：**能，而且贏更多**。
+
+但⚠️：type-aware 在 baseline 反而**變慢** 27%（318 → 404 µs），因為第一個 cold leaf 被推到 file 後段、cold fault 跑得更遠。**只有打開 prefetch 才會贏**。如果產品不打算 ship prefetch，type-aware layout 是反指標。
+
+> 📂 見 [layout_rewriter/LAYOUT_REWRITER.md](layout_rewriter/LAYOUT_REWRITER.md) 與 [overall_results.md 第二維](overall_results.md#第二維--layout-對-strategy-的放大效果workload-a-only)。
+
+### 第 10 章：偷看 OS 的 cache — 2f SLRU（`prefetch_slru/`）
+
+到第 9 章為止，所有 prefetch 都只 prefetch **interior page**（92 個）。leaf 是 cold fault，是宿命。
+
+新策略：跑完一次 workload **不要 evict**，直接用 `mincore()` dump 當下 OS page cache 裡的所有 resident page —— 大約 4,000 個（interior + 用到的 leaf）。下次 cold start 對這 4,000 個 page 一一呼叫 `madvise(MADV_WILLNEED)`。
+
+這是 SLRU（segmented LRU）的「protected segment」概念用 mincore 近似，不用碰 SQLite 內部，~70 行 C：
+
+```
+first query latency:  251 µs (baseline)  →  14 µs (2f SLRU)   ← -94%
+```
+
+第一筆 query 砸進的是熱 leaf，幾乎是 RAM cache hit。**但**：
+
+- 4,000 個 `madvise` syscall 自己花 **7.5 ms**
+- 端到端 cold start：251 µs → **7,269 µs**（比 baseline 慢 29×）
+
+**所以 2f 不是「降低 cold start」的策略，是「working-set preload」的策略。** 整段 workload 跑完：
+
+| 情境 | baseline | 2f SLRU | 改善 |
+|---|---:|---:|---:|
+| Cold tap 到第一筆結果 | **251 µs** | 7,269 µs | **慢 29×** |
+| 全 100k queries 跑完 | 411 ms | **256 ms** | **省 38%** |
+
+**第七個學到的教訓**：策略不只一個維度。`layers_5` 是「點開就看一筆」的最佳解；`2f SLRU` 是「點開後跑一段」的最佳解。**問問題之前先問你的應用屬於哪一種**。
+
+> 📂 見 [prefetch_slru/PREFETCH_SLRU.md](prefetch_slru/PREFETCH_SLRU.md)。
+
+### 第 11 章：不同 workload 翻轉策略排名
+
+前面所有實驗只跑兩個 workload（Zipfian + uniform churn）。後來補上 Workload B (uniform random point-read) 和 Workload C (high-key uniform read)，跑了完整的 4 prefetch × 3 layout × 3 workload 矩陣：
+
+**驚訝 1：layers_N 的「N=5 甜蜜點」是 Zipfian-only。**
+
+| Workload | 最佳 N | 改善 |
+|---|---|---|
+| A (Zipfian) | N=5 | -54% |
+| B (Uniform) | N=5~92 都一樣 | -48% (plateau) |
+| C (high-key) | **必須 N=92** | -46% |
+
+C 上的「query 走的 interior path 不在 file 前段」—— 按 offset 排前 N 選不到熱頁，必須**全載**。**「layers_N」其實是 Zipfian-friendly 啟發式，不是 universal 解。**
+
+**驚訝 2：Type-aware layout 不是 universal best。**
+
+- Workload A: **-69%**（最強）
+- Workload B: **+8%（反效果！）** —— ta 把 leaf 推到高 offset，B 的 cold leaf fault 跑更遠
+- Workload C: -37%（搭 perpage 才好；搭 layers_5 -32%）
+
+**驚訝 3：SQLite VACUUM 在 Workload C 上反而讓 baseline 變快 -6%**（A/B 變慢 +5~8%）。VACUUM 把整個 file 壓緊後，high-key region 的 seek 距離縮短。**「VACUUM 一律有害」是第 5 章的過度結論。**
+
+**第八個學到的教訓**：沒有 universal 最佳策略。**配方依 workload 而定**：Zipfian → ta + layers_5；uniform 全段 → orig + layers_5；file-tail uniform → ta + perpage 或 orig + 2f SLRU。
+
+> 📂 見 [overall_results.md](overall_results.md) 第六/七/八/九維。
+
+### 第 12 章：目前進度與下一步
 
 #### ✅ 已完成
 
-- **工具鏈完整**：classify_pages、benchmark_harness、residency_checker、prefetch、prefetch_layers 全部可用
-- **找到 prefetch 甜蜜點**：上層 5 個 interior page = -54% cold-start（最佳情境）
-- **解析了 VACUUM 為何傷害 layout**：sqlite3RunVacuum() 是 type-unaware
+- **工具鏈完整**：classify_pages、benchmark_harness、residency_checker、prefetch_layers、layout_rewriter、prefetch_slru 全部可用
+- **prefetch 策略全覆蓋**：2a Range / 2b Perpage / 2c Layers_N sweep / 2f SLRU 在 Workload A/B/C × Layout 1a/1b 上完整跑過（1c 上 A/B/C × {range, perpage, layers_5} 也完成）
+- **3 個層次都有結果**：
+  1. **找到 prefetch 甜蜜點**（A 上 N=5、-54%）
+  2. **解掉了 VACUUM 的問題**（type-aware layout_rewriter，A 上 -69%）
+  3. **動態世界與 working-set preload**（churn 上 -10%、2f SLRU 在 A/B 全 workload -38%）
 - **驗證了 MAP_SHARED 共享**：一個 process prefetch，所有人受惠
-- **動態世界驗證**：在 churned DB 上 prefetch 仍然有 ~10% 改善
-- **改造了 benchmark_harness 的 cold boundary**：現在能精確隔離 prefetch 階段
-- **層次三實驗已交付**（已開 PR）
+- **跨 workload 矩陣**：Workload B（uniform）、C（high-key uniform）和 A 一起跑 4 prefetch × 3 layout 的完整對照
 
 #### 🚧 進行中 / 待做
 
-- **Workload 多樣性還不夠**：目前實驗只跑兩種 workload（Zipf 的 workloadc + 接近 uniform 的 page_churn_high）。Zipf 的「熱點落在 high key vs low key」會造成完全不同的 churn 模式 — high key hotspot ≈ append-only、low key hotspot ≈ 劇烈 churn。**這兩種變體還沒測**。
-- **Type-aware VACUUM 還沒實作**：Week 11 已經指出問題，但實際改 SQLite source code 還沒做
-- **單一 N 設定**：churn 實驗只測 `prefetch_layers N=5`，沒對照 N=1、10、20 在 churned DB 上的曲線
+- **2d / 2e Access-pattern-based prefetch 未實作**：layers_N 的「按 file offset 排序」啟發式在 Workload C 上失效（第 11 章驚訝 1）。改用 access count 排序的前 N 應該能在 C 上以遠少於 92 個 syscall 達到相近效益
+- **2f SLRU 在 RAM 緊（cgroup < working set）的對照**：目前 RAM 充裕，2f vs 2d/2e 看不出差異
+- **2f SLRU × Layout 1c**：2f 只在 1a/1b 跑過
+- **Zipfian 變體**：low-key hotspot vs high-key hotspot 對 prefetch 效益的影響
+- **N sweep on churned DB**：prefetch_churn 只測 N=5
 
 #### 🔬 待回答的研究問題
 
-1. Type-aware VACUUM 真的能把 prefetch 效益從 -9% 救回 -54% 嗎？
+1. ~~Type-aware VACUUM 真的能把 prefetch 效益從 -9% 救回 -54% 嗎？~~ → **已解答（第 9 章），救回到 -69%**
 2. 在「low key hotspot」的 Zipf workload 下，prefetch 效益會比 uniform 還差嗎？
 3. 多 process 場景下，prefetch worker 該多久跑一次？（DB 持續被 churn 時）
+4. **新**：2d/2e access-pattern prefetch 能否在 Workload C 上以 <10 個 syscall 達到接近 layers_92 的 -46% 改善？
 
 ---
 
@@ -207,12 +297,17 @@ prefetch_churn:   6,892 µs → 6,300 µs 省 592 µs (-10%)  ← uniform worklo
 每個實驗都是獨立的子目錄，包含自己的程式碼、文件與數據：
 
 ```
+├── overall_results.md      # 📊 跨實驗策略 × workload 結果矩陣（最新）
+├── overall_strategies.md   # 📋 所有策略目錄與狀態
+├── overall_workloads.md    # 📋 Workload A/B/C/D 定義
 ├── classify_pages/         # SQLite page-type 分類器
 ├── benchmark_harness/      # Cold-start workload benchmark 工具
 ├── residency_checker/      # Page residency 檢查工具
-├── prefetch_churn/         # Prefetch + page churn 主實驗（orchestrator）
-├── multiprocess/           # Multi-process mmap 實驗
-├── prefetch_vacuum/        # Prefetch + VACUUM 實驗
+├── prefetch_vacuum/        # 早期 prefetch + VACUUM 實驗（第 3–5 章）
+├── prefetch_churn/         # Prefetch + page churn 主實驗（第 7 章）
+├── multiprocess/           # Multi-process mmap 實驗（第 6 章）
+├── layout_rewriter/        # ⭐ Type-aware layout rewriter + cross-layout 矩陣（第 9, 11 章）
+├── prefetch_slru/          # ⭐ 2f SLRU prefetch via mincore（第 10 章）
 └── frontend/               # 16-week 研究計畫 UI 元件
 ```
 
@@ -231,6 +326,8 @@ prefetch_churn:   6,892 µs → 6,300 µs 省 592 µs (-10%)  ← uniform worklo
 | `prefetch_vacuum/` | 第 3–5 章 | 找到甜蜜點 + 揭露 VACUUM 問題 |
 | `multiprocess/` | 第 6 章 | 證明 mmap 共享，prefetch 效益乘 N |
 | `prefetch_churn/` | 第 7–8 章 | 動態世界驗證 + workload 偏斜度討論 |
+| `layout_rewriter/` | 第 9, 11 章 | Type-aware layout + cross-workload 對照矩陣 |
+| `prefetch_slru/` | 第 10 章 | mincore-based working-set preload |
 | `frontend/16week_plan.jsx` | — | 整個研究計畫的 UI tracker |
 
 ## 各實驗目錄
@@ -284,6 +381,14 @@ python3 classify_pages/plot_pages.py pages.csv page_layout.png
 ### [prefetch_vacuum/](prefetch_vacuum/) — Prefetch + VACUUM 實驗
 
 詳見 [prefetch_vacuum/PREFETCH_VACUUM.md](prefetch_vacuum/PREFETCH_VACUUM.md)。
+
+### [layout_rewriter/](layout_rewriter/) — Type-aware Layout Rewriter + 跨 layout/workload 矩陣
+
+從 source DB 直接寫一個 type-aware layout 的新 DB（interior 全排到 page 2-93 連續區），不碰 SQLite source code。包含 cross-workload × cross-layout 完整對照矩陣（第六/七/八/九維）。詳見 [layout_rewriter/LAYOUT_REWRITER.md](layout_rewriter/LAYOUT_REWRITER.md)。
+
+### [prefetch_slru/](prefetch_slru/) — 2f SLRU Prefetch（mincore-based）
+
+跑完一次 workload 後用 `mincore()` dump 當下 OS page cache 的 residency snapshot，下次 cold start 全部 `madvise(MADV_WILLNEED)`。**完全不用攔截 SQLite 內部**，~70 行 C。詳見 [prefetch_slru/PREFETCH_SLRU.md](prefetch_slru/PREFETCH_SLRU.md)。
 
 ### [frontend/](frontend/) — 16-week Research Plan UI
 
