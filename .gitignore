@@ -15,6 +15,14 @@ prefetch_slru/runs/evict
 prefetch_slru/runs/prefetch_layers
 prefetch_slru/runs/prefetch_slru
 prefetch_slru/runs/residency_checker
+prefetch_churn/benchmark_harness
+prefetch_churn/classify_pages
+prefetch_churn/prefetch_layers
+prefetch_churn/residency_checker
+prefetch_churn/runs_nsweep/evict
+
+# --- Convenience symlinks to canonical workloads/ ---
+prefetch_churn/generated_workloads/
 
 # --- Object files / static libs ---
 *.o

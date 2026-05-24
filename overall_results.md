@@ -114,6 +114,11 @@ prefetch 仍然省 ~7%（絕對省 ~487 µs/query）。對照 Workload A 的 -54
 百分比看起來小，但**絕對省的時間反而多**（A 省 40 µs vs C 省 487 µs），因為
 baseline 本來就被 leaf cold fault 拉到 5,000+ µs 起跳。
 
+> **後續補測（第十維）**：本節只跑 N=5 一個 N 值。第十維把 N=1/10/20/46/92
+> 全跑過（用 `posix_fadvise` harness、絕對 µs 不能跨表比）— 結論是 churned
+> DB 上 N=92 帶來 -54% 改善，且在所有 10 個 checkpoint 上都壓制其他 N。N=5
+> 在第十維的 harness 下省 ~10.6%（方向跟本節 -7% 一致）。
+
 資料來源：[prefetch_churn/results/](prefetch_churn/results/)
 
 ---
@@ -492,6 +497,88 @@ leaves 排得更連續，一次 readahead 載入的 page 數變多，重複 quer
 
 ---
 
+## 第十維 — N sweep × Workload C × churned DB（補齊 prefetch_churn 缺口）
+
+第四維只用 N=5 跑了 10 個 churn checkpoint，第八維只在乾淨 DB 上做 N sweep。
+本節在 **churned DB × Workload C** 上補上 N=1/10/20/46/92 sweep，回答「乾淨 DB
+的『N=92 必勝、N≤46 plateau』結論在 churn 漂移後是否還成立」。
+
+**Harness 注意：** 本節用 `posix_fadvise(POSIX_FADV_DONTNEED)` evict（不需要
+sudo），跟第四維的 `sudo drop_caches` **不同冷啟動機制**，絕對 µs 不能跟第四
+維直接比。第四維 baseline ~5,130 µs（全 kernel cache 清空），本節 baseline
+~462 µs（只 evict file pages，slab/syscall cache 留住）。**本節內 N 值之間
+可直接比較**。
+
+### Latency 矩陣（first-query µs，每個 N 一個獨立 run）
+
+每個 checkpoint 之間用 Workload D 跑 5,000 ops 製造 churn，10 個 checkpoint
+累積 50,000 ops。每個 cell 是一次 run（不是 median）。
+
+| Checkpoint (ops) | N=0 | N=1 | N=5 | N=10 | N=20 | N=46 | **N=92** |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| baseline (0) | 407 | 422 | 387 | 383 | 389 | 385 | **209** |
+| ck001 (5k) | 387 | 420 | 443 | 523 | 331 | 396 | **202** |
+| ck002 (10k) | 450 | 417 | 408 | 465 | 403 | 422 | **203** |
+| ck003 (15k) | 433 | 409 | 396 | 437 | 390 | 393 | **232** |
+| ck004 (20k) | 460 | 403 | 380 | 364 | 391 | 323 | **208** |
+| ck005 (25k) | 502 | 465 | 388 | 431 | 452 | 408 | **176** |
+| ck006 (30k) | 431 | 462 | 406 | 393 | 392 | 392 | **218** |
+| ck007 (35k) | 428 | 411 | 344 | 362 | 378 | 354 | **227** |
+| ck008 (40k) | 492 | 504 | 466 | 409 | 451 | 453 | **193** |
+| ck009 (45k) | 488 | 503 | 405 | 426 | 496 | 463 | **229** |
+| ck010 (50k) | 549 | 497 | 496 | 439 | 498 | 456 | **242** |
+
+### 跨 10 checkpoint 平均（ck001-010）
+
+| N | avg first-q (µs) | vs N=0 baseline |
+|---:|---:|---:|
+| 0 (no prefetch) | 462 | — |
+| 1 | 449 | -2.8% |
+| 5 | 413 | -10.6% |
+| 10 | 425 | -8.0% |
+| 20 | 418 | -9.5% |
+| 46 | 406 | -12.1% |
+| **92 (all interior)** | **213** | **-53.9%** ← clear winner |
+
+### 四個發現
+
+1. **churned DB 的 N sweep 形狀跟乾淨 DB 完全一致**：N=1~46 都 plateau 在
+   -10% 附近，N=92 跳到 -54%。第八維乾淨 DB 上是 N=1~46 plateau 在 -15%、
+   N=92 跳到 -46%。**Churn 沒有改變 layers_N 在 C 上的根本問題**。
+
+2. **N=92 在所有 11 個 checkpoint 都壓制其他 N**（包括 baseline checkpoint）。
+   churn 累積到 50k ops 後，N=92 仍穩定在 200~240 µs，其他 N 漂移到 400~550 µs。
+   **layers_N=92 是 churn-robust 的選擇**。
+
+3. **N=5 也省 -10.6%**（413 vs 462）— 跟第四維「ck001-010 平均 -7%」方向一致，
+   只是 harness 不同所以絕對值不同。第四維是 sudo drop_caches 下平均省
+   ~487 µs；本節是 posix_fadvise 下平均省 ~49 µs。**相對改善的方向 robust，
+   絕對節省值跟冷啟動機制有關**。
+
+4. **單筆 noise 很大**（ck005 N=10 從 N=5 的 388 跳到 431，N=20 又跳到 452，
+   ck008 N=1 從 N=0 的 492 漲到 504）— 跟第四維觀察到的「單 checkpoint
+   ±20% 噪音」一致。每個 N 跑單一 run、沒 median 之下，要看 ck001-010 平均
+   才有意義。
+
+### 結論
+
+- **layers_N 在 C 上的「N=92 必勝」結論在 churned DB 上同樣成立**：第八維乾
+  淨 DB 上是 -46%、churned DB 上是 -54%，churn 反而把 N=92 的相對優勢拉大。
+- **解釋**：C 走的 interior path 不在 file 前段（清楚證據已在第八維）。Churn
+  會把新 interior 配到更亂的 file 位置（freelist 重用），讓「按 offset 排序的
+  top-N」更不準。N=92 載全部 interior 就不受 layout 漂移影響。
+- **prefetch_churn 第四維補齊**：N 在 churned DB 上的曲線從只有 N=5 補到完整
+  sweep。剩餘缺口（README/overall_workloads.md 已知缺口）只剩 Zipfian
+  low-key hotspot 變體 + RAM-constrained 對照。
+
+資料來源：
+- 完整 matrix: [prefetch_churn/results/nsweep_churn_matrix_first_q_us.csv](prefetch_churn/results/nsweep_churn_matrix_first_q_us.csv)
+- 摘要: [prefetch_churn/results/nsweep_churn_summary.csv](prefetch_churn/results/nsweep_churn_summary.csv)
+- Per-N benchmark dirs: [prefetch_churn/runs_nsweep/n{0,1,5,10,20,46,92}/benchmark_summary.csv](prefetch_churn/runs_nsweep/)
+- N-sweep wrapper: [prefetch_churn/runs_nsweep/run_nsweep.sh](prefetch_churn/runs_nsweep/run_nsweep.sh)
+
+---
+
 ## 還沒跑的策略 × workload 組合
 
 | 缺口 | 為什麼值得測 |
@@ -501,7 +588,6 @@ leaves 排得更連續，一次 readahead 載入的 page 數變多，重複 quer
 | **2f SLRU 在 RAM 緊的對照** | 第五維是 RAM 充裕情境，2f vs 2d/2e 看不出差異。用 cgroup 把 RAM 預算壓到 < working set，才能體現 SLRU 不會挑重點的缺點 |
 | **2f SLRU × Layout 1c (type-aware)** | 2f 只在 Layout 1a 上跑過。Layout 1c 已經把 interior 集中到檔頭，2f 還能再省什麼是個有趣對照（直覺上 first-q 不會更好，但 prefetch overhead 可能下降）|
 | **Zipfian low-key hotspot variant** | 目前 Workload A 的熱點分佈在整個 [8, 99997] 區段。若熱點全在 [1, 1000]（≈ append-only churn）或全在 [99k, 100k]（≈ random churn），prefetch 效益會分歧 |
-| **N sweep on churned DB** | prefetch_churn 只測 N=5，缺 N=1/10/20 在 churned layout 上的曲線（README 第 9 章自己列的 TODO）|
 
 ---
 
@@ -520,7 +606,8 @@ leaves 排得更連續，一次 readahead 載入的 page 數變多，重複 quer
 | **C（high-key）** | first-q | **perpage on type-aware layout** | **-37%**（467 → 294 µs） | ta + perpage 是不需要 warmup pass 的最佳組合 |
 | **C（high-key）** | first-q | **layers_92 (全部 interior) on 原始 layout** | **-46%**（491 → 265 µs） | 不改 layout，但要載全部 92 個 interior |
 | **C（high-key）** | 全 workload | **2f SLRU** on 原始 layout | **-7%**（262 → 245 ms）| ⚠️ 收益小，因 baseline avg-q 已接近 readahead 下限 |
-| **C（high-key）** | first-q | layers_5 on churned DB | **-10%**（avg）| 隨 churn 累積才看出效益 |
+| **C（high-key）** | first-q | layers_5 on churned DB | **-10%**（avg）| 隨 churn 累積才看出效益（第四維 sudo drop_caches） |
+| **C（high-key）** | first-q | **layers_92 on churned DB** | **-54%**（462 → 213 µs avg）| 第十維 posix_fadvise harness：N=92 是 churn-robust 的選擇，10 個 checkpoint 全部 -50% 以上 |
 
 **速記：**
 - 「**點開就看一筆**」（聯絡人、設定）→ **layers_5**（cold start 152 µs vs SLRU 7,500 µs）

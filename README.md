@@ -153,6 +153,22 @@ scatter 從 0.96 變 1.13（**更散**），prefetch 效益從 -54% 退化到 -9
 
 **第五個學到的教訓**：prefetch 在真實的、被使用過一段時間的 DB 上**仍然有效**，但 baseline 也變得更慢，所以絕對省的時間（μs）比百分比更值得看。
 
+**補測 — N sweep on churned DB（2026-05）**：上表只測 `N=5`。後來把 churned DB 上的 N 補滿 {0,1,5,10,20,46,92}，每 N × 11 checkpoint 共 77 runs（換成 unprivileged `posix_fadvise` 避開 sudo，所以絕對 µs 跟上表不可比，但 sweep 內部 N 之間相對效益可比）：
+
+| N | avg first-q (µs, ck001–010) | vs N=0 |
+|---:|---:|---:|
+| 0 (no prefetch) | 462 | — |
+| 1 | 449 | −2.8% |
+| 5 | 413 | −10.6% |
+| 10 | 425 | −8.0% |
+| 20 | 418 | −9.5% |
+| 46 | 406 | −12.1% |
+| **92** | **213** | **−53.9%** |
+
+`N=92` 在 churned DB 上**獨大**，且在 11 個 checkpoint 全部維持優勢。原因跟第 11 章驚訝 1 同源：churn 製造的新 interior page 全在檔尾，按 file offset 排前 N 永遠選不到熱頁，**必須全載**。這也是「layers_N 是 Zipfian-friendly heuristic、不是 universal 解」這條觀察首次在動態 DB 上被驗證。
+
+> 📂 詳見 [overall_results.md 第十維](overall_results.md#第十維--n-sweep-on-churned-db-2026-05-補測)。
+
 > 📊 **想看跨實驗的策略矩陣與每個 workload 的最佳組合？** 看
 > [overall_results.md](overall_results.md)（結果）／
 > [overall_strategies.md](overall_strategies.md)（策略目錄）／
@@ -250,6 +266,8 @@ first query latency:  251 µs (baseline)  →  14 µs (2f SLRU)   ← -94%
 
 C 上的「query 走的 interior path 不在 file 前段」—— 按 offset 排前 N 選不到熱頁，必須**全載**。**「layers_N」其實是 Zipfian-friendly 啟發式，不是 universal 解。**
 
+> ➕ **後續驗證（2026-05）**：把 N sweep 跑在 **churned DB** 上（10 個 checkpoint 累積 50,000 ops），N=92 同樣是唯一贏家（−54%），其他 N 全部退化。Churn 把新 interior pages 推到檔尾，跟 C 的「熱頁不在 file 前段」結構同源 → 這條 Zipfian-friendly 觀察在動態 DB 上也成立。見第 7 章補測。
+
 **驚訝 2：Type-aware layout 不是 universal best。**
 
 - Workload A: **-69%**（最強）
@@ -281,7 +299,7 @@ C 上的「query 走的 interior path 不在 file 前段」—— 按 offset 排
 - **2f SLRU 在 RAM 緊（cgroup < working set）的對照**：目前 RAM 充裕，2f vs 2d/2e 看不出差異
 - **2f SLRU × Layout 1c**：2f 只在 1a/1b 跑過
 - **Zipfian 變體**：low-key hotspot vs high-key hotspot 對 prefetch 效益的影響
-- **N sweep on churned DB**：prefetch_churn 只測 N=5
+- ~~**N sweep on churned DB**：prefetch_churn 只測 N=5~~ → **已補完**（見第 7 章補測：N=92 −54%）
 
 #### 🔬 待回答的研究問題
 
@@ -371,7 +389,8 @@ python3 classify_pages/plot_pages.py pages.csv page_layout.png
 - `testdb_builder.py` — 建立 benchmark 用的大型 DB
 - `drop_caches.sh` — root helper，清空 Linux page cache
 - `workloads/` — page churn workload 檔案
-- `results/` — 各 checkpoint 的 churn / prefetch summary CSV
+- `results/` — 各 checkpoint 的 churn / prefetch summary CSV（含 `nsweep_churn_*.csv` 補測結果）
+- `runs_nsweep/` — N∈{0,1,5,10,20,46,92} × 11 checkpoint sweep（unprivileged `posix_fadvise` evict）
 - `logs/` — benchmark_harness run 紀錄
 
 ### [multiprocess/](multiprocess/) — Multi-process mmap 實驗

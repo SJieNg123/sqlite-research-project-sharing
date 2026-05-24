@@ -1,0 +1,68 @@
+#!/bin/bash
+# N-sweep on churned DB: baseline + N∈{1,5,10,20,46,92} × 10 checkpoints
+# Uses posix_fadvise (evict) instead of sudo drop_caches → comparable to
+# layout_rewriter/prefetch_slru harnesses but NOT to the original N=5 churn result.
+set -u
+DIR=/home/u03/sqlite-research-project-sharing/prefetch_churn
+RUNS=$DIR/runs_nsweep
+cd "$DIR"
+
+run_one() {
+  local n="$1"   # 0 means baseline (no prefetch)
+  local outdir="$RUNS/n${n}"
+  mkdir -p "$outdir/checkpoints" "$outdir/benchmarks"
+
+  # per-N evict script (drop-caches replacement)
+  local evict_script="$outdir/evict.sh"
+  cat > "$evict_script" <<EOF
+#!/bin/sh
+exec $RUNS/evict $outdir/test_churn.db >&2
+EOF
+  chmod +x "$evict_script"
+
+  local mode pages_arg
+  if [ "$n" = "0" ]; then
+    mode="none"
+    pages_arg=""
+  else
+    mode="layers"
+    pages_arg="--prefetch-pages $n"
+  fi
+
+  echo "=== N=$n (mode=$mode) ==="
+  python3 sqlite_prefetch_churn_experiment.py \
+    --force \
+    --run-benchmarks \
+    --source-db test.db \
+    --work-db "$outdir/test_churn.db" \
+    --classifier ./classify_pages \
+    --benchmark-harness ./benchmark_harness \
+    --benchmark-workload generated_workloads/page_churn_benchmark_high.txt \
+    --write-workload generated_workloads/page_churn_write.txt \
+    --drop-caches-script "$evict_script" \
+    --no-drop-caches-use-sudo \
+    --prefetch-mode "$mode" $pages_arg \
+    --prefetch-tool ./prefetch_layers \
+    --benchmark-cold-advice none \
+    --no-plot-checkpoints \
+    --no-run-residency-checker \
+    --checkpoint-dir "$outdir/checkpoints" \
+    --benchmark-dir "$outdir/benchmarks" \
+    --summary-csv "$outdir/interior_summary.csv" \
+    --interior-pages-csv "$outdir/interior_pages.csv" \
+    --benchmark-summary-csv "$outdir/benchmark_summary.csv" \
+    > "$outdir/run.log" 2>&1
+  local rc=$?
+  if [ $rc -ne 0 ]; then
+    echo "  ❌ N=$n failed (rc=$rc) — see $outdir/run.log"
+    tail -20 "$outdir/run.log"
+    return $rc
+  fi
+  echo "  ✅ N=$n done → $outdir/benchmark_summary.csv"
+}
+
+for N in "$@"; do
+  run_one "$N" || exit 1
+done
+
+echo "ALL DONE"

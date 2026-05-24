@@ -84,11 +84,15 @@ INSERT 會把新資料放在檔尾，這個 workload 就在量「檔尾新資料
 **用在哪：**
 - `prefetch_churn/` 的 10 個 checkpoint：每個 checkpoint 之間先用 Workload D
   製造寫入壓力，然後 drop cache，再跑這個 workload 量 cold-start latency
+  - 原本只跑 N=5（第四維）
+  - **後續 N sweep 補測**：[`prefetch_churn/runs_nsweep/`](prefetch_churn/runs_nsweep/) 跑了
+    N=0/1/5/10/20/46/92 × 10 checkpoints，見 [overall_results.md 第十維](overall_results.md#第十維--n-sweep--workload-c--churned-db補齊-prefetch_churn-缺口)
 - `layout_rewriter/runs/` 的 1b VACUUM、1c type-aware、N sweep × {orig, vacuum}
   全矩陣
   - **關鍵發現**：C 上 layers_N 必須 N=92（載全部 interior）才有 -46% 改善，
     N≤46 只有 ~15%。原因：C 走的 interior path 不在 file 前段，按 offset 排
     top-N 完全選錯 page。**這直接證明「layers_N 是 zipfian-friendly 啟發式」**
+  - **churned DB 上同樣的形狀**（第十維）：N=92 -54%、N≤46 plateau ~10%
 - `prefetch_slru/` 的 2f SLRU 驗證（C 上 hot set 只 1.6 MB，prefetch 開銷
   只 1.9 ms vs A/B 的 7.5 ms — 是 2f 的甜蜜情境）
 
@@ -139,7 +143,8 @@ layout 上還剩多少效益」。
 | `layout_rewriter/runs/` (1c type-aware × B/C) | B + C | ta layout 是否 universal best？(答案：B 上反效果) |
 | `layout_rewriter/runs/` (N sweep × A/B/C × {orig, vacuum}) | A + B + C | 「N=5 甜蜜點」是 zipfian-friendly 還是 universal？(答案：zipfian-only) |
 | `prefetch_slru/` (2f SLRU × A/B/C × {orig, vacuum}) | A + B + C | mincore-dumped resident set preload 在三種 workload 的效益 (first-q -94%、全 workload A/B -38%、C -7%) |
-| `prefetch_churn/` 量測 | C (high-key uniform) | Layout 隨 churn 漂移後，prefetch 效益怎麼變？|
+| `prefetch_churn/` 量測 (N=5 only) | C (high-key uniform) | Layout 隨 churn 漂移後，prefetch 效益怎麼變？|
+| `prefetch_churn/runs_nsweep/` (N=0,1,5,10,20,46,92) | C (high-key uniform) | churned DB 的 N sweep 形狀是否跟乾淨 DB 一致？(答案：完全一致，N=92 -54%) |
 | `prefetch_churn/` churn 生成 | D (mixed write) | 製造真實的 layout 漂移壓力（不量 latency）|
 | `multiprocess/` | 不用 workload（只測 residency / RSS）| MAP_SHARED 是否真的跨 process 共享 page cache？|
 
@@ -173,9 +178,11 @@ layout 上還剩多少效益」。
   分佈在 8..99k 整個區段裡。若把熱點壓到 [1, 1000] 這種極窄區，prefetch 效益
   會跟 [99k, 100k] 完全不同（前者 ≈ append-only churn pattern，後者 ≈ random
   churn pattern）。**這兩個變體還沒測**。
-- **N 在 churned DB 上的曲線**：`prefetch_churn` 只用了 N=5；缺 N=1/10/20
-  在 Workload C 上的對照曲線。（已知乾淨 DB 上 C 需要 N=92 才有 -46%，churned
-  DB 上的曲線形狀未知）
+- ~~**N 在 churned DB 上的曲線**~~：已補（見
+  [overall_results.md 第十維](overall_results.md#第十維--n-sweep--workload-c--churned-db補齊-prefetch_churn-缺口)）。
+  結論：churned DB 上 N≤46 在 -10% 附近 plateau，**N=92 帶來 -54% 改善並在
+  10 個 checkpoint 上全部壓制其他 N**，跟乾淨 DB 上的形狀完全一致。Churn 不
+  改變「layers_N 在 C 上需要 N=92」的根本問題。
 - **RAM 緊縮場景的 workload**：目前的 A/B/C 都是 ~16 MB hot set in unlimited RAM。
   缺一個 cgroup 限制下、hot set > RAM 的 workload，才能看出 2f SLRU vs
   access-count（2d/2e）的差別。
@@ -193,7 +200,7 @@ layout 上還剩多少效益」。
 | **Layout 1a (orig)** | ✅ 全策略 | ✅ 全策略 | ✅ 全策略 |
 | **Layout 1b (VACUUM)** | ✅ baseline + range/perpage/layers_5 + **N sweep + 2f SLRU** | ✅ 全策略 | ✅ 全策略 |
 | **Layout 1c (type-aware)** | ✅ baseline + range/perpage/layers_5 | ✅ baseline + range/perpage/layers_5 | ✅ baseline + range/perpage/layers_5 |
-| **Churn 漂移** | — | — | ✅ 10 checkpoints × layers_5 |
+| **Churn 漂移** | — | — | ✅ 10 checkpoints × **N sweep {0,1,5,10,20,46,92}** |
 
 B 早就不再只是「對照組」 — 它是 prefetch 失敗模式（leaf fault 主導）和 ta
 layout 反效果（+8%）的主要證據來源。
