@@ -13,7 +13,7 @@
 > - **1a/1b/1c** = Layout（orig / VACUUM / type-aware）
 > - **2a–2f** = Prefetch 策略（range / perpage / layers_N / 2d / 2e_K* / 2f SLRU）
 > - **3a / 3b** = Access-pattern **ratio variants**：interior:leaf = 7:3 / 5:5（由 2e_K40 / 2e_K92 實現）
-> - **4a / 4b** = Memory-sharing（MAP_SHARED / Private buffer pool；原本叫 3a/3b，2026-05 因撞名重新編號）
+> - **4a / 4b** = Memory-sharing（MAP_SHARED / Private buffer pool）
 
 ---
 
