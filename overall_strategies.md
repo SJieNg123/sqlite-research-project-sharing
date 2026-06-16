@@ -275,6 +275,62 @@ first_rowid 抽出來、建立 key → leaf 對應表；對 workload 的每個 r
   + [第十六維](overall_results.md#第十六維--ram-pressure-完整矩陣cgroup-memorymax20-mb-abc--1a1b1c--base-2d-2e_k1050100500-2f_slru)
   + [第十八維](overall_results.md#第十八維--churn-擴充abc--churn--2c-layers_n--2d--2e_kab--churn--statictk0-hotpages)。
 
+### SLRU-approximated（已完成）
+
+#### 策略 2f — SLRU prefetch（mincore-dumped resident set，已完成）
+
+跑完一次 workload 後**不要 evict**，直接用 `mincore()` dump 當下 OS page cache
+裡的所有 resident page，存成 `hotpages.csv`。下次 cold start 時對每個
+`is_resident=1` 的 page 一一呼叫 `madvise(MADV_WILLNEED)`。
+[prefetch_slru/src/prefetch_slru.c](prefetch_slru/src/prefetch_slru.c)。
+
+**和 2d/2e 的差別：** 2d/2e 要攔截 SQLite 的 page read 才能算 access count；
+2f 只看 workload 結束後的 residency snapshot，**完全不用碰 SQLite 內部**，
+但精度較低 —— 只知道一個 page **有沒有**被用過，不知道**被用幾次**。
+實作成本：~70 行 C。
+
+**狀態：** 已完成，在 Workload A (Zipfian)、B (Uniform)、C (high-key uniform)
+三個 workload × **三個 layout (1a orig / 1b vacuum / 1c type-aware)** 上跑過。
+**結果：**
+- **First-query latency 在三個 workload × 三個 layout 上一致大勝 -94~95%**：
+  - Layout 1a (orig): A 251 → 14 µs、B 255 → 15 µs、C 250 → 16 µs
+  - Layout 1b (vacuum): A 219 → 15 µs、B 230 → 14 µs、C 212 → 14 µs
+  - Layout 1c (type-aware): A 321 → 15 µs、B 304 → 16 µs、C 249 → 13 µs
+  - **2f SLRU 是 layout-agnostic**：layout 變動對 first-q 影響 < 3 µs（小於單筆 noise）
+- **Prefetch 開銷由 hot set 大小決定**：A/B 4,000+ syscalls 花 ~7.5 ms；
+  **C 只 420 syscalls 花 1.9 ms（4× 便宜）**，端到端 cold start C 只「慢
+  7.6×」（A/B 慢 30×）
+- **全 workload 跑完的省下幅度跟 baseline 的 avg-q 走**：A 省 39%（411 → 249 ms）、
+  B 省 38%（413 → 255 ms）、**C 只省 7%**（262 → 245 ms）—— 因 C 的 baseline
+  avg-q 已經是 2.62 µs（leaves 高度共享同個 disk region，沒多少 cold fault 可解）
+- **A 和 B 結果幾乎一樣**，推翻原本「SLRU 在 skewed 上會輸給 access-count」的
+  預測 —— 因為 hot set (~16 MB) 全塞得進 RAM，沒有「該丟誰」的競爭，frequency
+  資訊用不上
+- **2f 的「working-set preload」價值跟 hot set 的 leaf spread 成正比** —— 越
+  分散（A/B），preload 收益越大；越集中（C），收益越小
+
+**結論：** 2f 不是「降低 cold-start」的策略，是「working-set preload」的策略。
+適用情境跟 2c Layers N 完全不同 —— 詳見
+[prefetch_slru/PREFETCH_SLRU.md](prefetch_slru/PREFETCH_SLRU.md) 的 trade-off
+矩陣。
+
+**RAM-pressure 結果（756-cell 矩陣，第十六維）：**
+- **First-q 完全免疫**：18 個 (WL, layout, mem) cells 全部 15-19 µs（-95~98%），
+  跟 RAM 壓力與 layout 都無關。
+- **新發現：1b vacuum 是唯一「avg/majflt 也 RAM-pressure-immune」的 layout** ——
+  cgroup 20M 下 A/B/C × vacuum × 2f_SLRU 全部 majflt = 0、avg = 1.50/1.56
+  （跟 unlimited RAM 一樣）。1a orig / 1c ta 下 majflt 從 0 跳到 172-181、
+  avg 從 1.50 退到 1.79-1.87（**接近 base level，2f preload 被 evict**）。
+- **意義：「2f SLRU + 1b vacuum」是 RAM 緊環境的全保留組合**——既拿到 -95% first-q，
+  也拿到 working-set preload 的 avg 改善。其他 layout 下 2f 在 20M 仍贏 first-q
+  但失去 avg 優勢。
+
+### Access-pattern ratio variants（3a / 3b）
+
+3a / 3b 是 2e 的 ratio 變體：固定 **interior:leaf** 比例分別為 7:3 與 5:5，
+由 `2e_K=40` / `2e_K=92` 實現。它們不是新策略，是為了驗證「ratio 是不是
+first-q 的主要 axis」（結論：K 才是，ratio 只是 K 的副產品）。
+
 #### 策略 3a — Access pattern, interior + leaf @ 7:3 ratio (= 2e_K40, 已完成)
 
 原始 spec 把「interior 集合再加 leaf」拆成兩個 ratio：3a = 70% interior + 30%
@@ -339,56 +395,6 @@ ta layout 把 interior 集中後，加 92 個熱 leaves 反而引發 readahead p
 - **與原 spec 對齊度**：實際 ratio 受「resident interior 數」拖累，只有 ta layout
   接近 spec（44:56），其他 layout 嚴重偏 leaf。要嚴格對齊原 ratio，需改 2e
   讓它強制 prefetch 全部 92 interior（不只 resident 的）— 屬未來工作。
-
-### SLRU-approximated（已完成）
-
-#### 策略 2f — SLRU prefetch（mincore-dumped resident set，已完成）
-
-跑完一次 workload 後**不要 evict**，直接用 `mincore()` dump 當下 OS page cache
-裡的所有 resident page，存成 `hotpages.csv`。下次 cold start 時對每個
-`is_resident=1` 的 page 一一呼叫 `madvise(MADV_WILLNEED)`。
-[prefetch_slru/src/prefetch_slru.c](prefetch_slru/src/prefetch_slru.c)。
-
-**和 2d/2e 的差別：** 2d/2e 要攔截 SQLite 的 page read 才能算 access count；
-2f 只看 workload 結束後的 residency snapshot，**完全不用碰 SQLite 內部**，
-但精度較低 —— 只知道一個 page **有沒有**被用過，不知道**被用幾次**。
-實作成本：~70 行 C。
-
-**狀態：** 已完成，在 Workload A (Zipfian)、B (Uniform)、C (high-key uniform)
-三個 workload × **三個 layout (1a orig / 1b vacuum / 1c type-aware)** 上跑過。
-**結果：**
-- **First-query latency 在三個 workload × 三個 layout 上一致大勝 -94~95%**：
-  - Layout 1a (orig): A 251 → 14 µs、B 255 → 15 µs、C 250 → 16 µs
-  - Layout 1b (vacuum): A 219 → 15 µs、B 230 → 14 µs、C 212 → 14 µs
-  - Layout 1c (type-aware): A 321 → 15 µs、B 304 → 16 µs、C 249 → 13 µs
-  - **2f SLRU 是 layout-agnostic**：layout 變動對 first-q 影響 < 3 µs（小於單筆 noise）
-- **Prefetch 開銷由 hot set 大小決定**：A/B 4,000+ syscalls 花 ~7.5 ms；
-  **C 只 420 syscalls 花 1.9 ms（4× 便宜）**，端到端 cold start C 只「慢
-  7.6×」（A/B 慢 30×）
-- **全 workload 跑完的省下幅度跟 baseline 的 avg-q 走**：A 省 39%（411 → 249 ms）、
-  B 省 38%（413 → 255 ms）、**C 只省 7%**（262 → 245 ms）—— 因 C 的 baseline
-  avg-q 已經是 2.62 µs（leaves 高度共享同個 disk region，沒多少 cold fault 可解）
-- **A 和 B 結果幾乎一樣**，推翻原本「SLRU 在 skewed 上會輸給 access-count」的
-  預測 —— 因為 hot set (~16 MB) 全塞得進 RAM，沒有「該丟誰」的競爭，frequency
-  資訊用不上
-- **2f 的「working-set preload」價值跟 hot set 的 leaf spread 成正比** —— 越
-  分散（A/B），preload 收益越大；越集中（C），收益越小
-
-**結論：** 2f 不是「降低 cold-start」的策略，是「working-set preload」的策略。
-適用情境跟 2c Layers N 完全不同 —— 詳見
-[prefetch_slru/PREFETCH_SLRU.md](prefetch_slru/PREFETCH_SLRU.md) 的 trade-off
-矩陣。
-
-**RAM-pressure 結果（756-cell 矩陣，第十六維）：**
-- **First-q 完全免疫**：18 個 (WL, layout, mem) cells 全部 15-19 µs（-95~98%），
-  跟 RAM 壓力與 layout 都無關。
-- **新發現：1b vacuum 是唯一「avg/majflt 也 RAM-pressure-immune」的 layout** ——
-  cgroup 20M 下 A/B/C × vacuum × 2f_SLRU 全部 majflt = 0、avg = 1.50/1.56
-  （跟 unlimited RAM 一樣）。1a orig / 1c ta 下 majflt 從 0 跳到 172-181、
-  avg 從 1.50 退到 1.79-1.87（**接近 base level，2f preload 被 evict**）。
-- **意義：「2f SLRU + 1b vacuum」是 RAM 緊環境的全保留組合**——既拿到 -95% first-q，
-  也拿到 working-set preload 的 avg 改善。其他 layout 下 2f 在 20M 仍贏 first-q
-  但失去 avg 優勢。
 
 ---
 
