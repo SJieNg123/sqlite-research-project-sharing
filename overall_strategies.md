@@ -143,31 +143,35 @@ load 那一頁），但 92 個 syscall 開銷 2.9 ms，吃掉一部分效益。
 **結論：** N=5 是 syscall overhead 與 coverage 的最佳折衷**僅在 Workload A
 上**。配合 type-aware layout 可達 -69%。
 
-**Workload-specific 結果**（A/B/C × {1a orig, 1b vacuum, 1c type-aware, churned}）：
-- **A on 1a/1b**: N=5 -54% 是甜蜜點（U 型曲線）；1b 新甜蜜點 N=20 多省 4%
-- **A on 1c**: layers_N 升級為 **N=92 -71% / N≥5 plateau ~-66~71%**（U 型曲線
-  消失；TA 把 interior 全集中到檔頭，任何 N≥5 都 cover）
-- **B on 1a/1b**: N=5~92 全 plateau 在 -48%（沒有 U 型曲線；leaf-fault 主導）
-- **B on 1c**: **layers_N 失效** — N=5/10 完全沒幫助（+4%），最佳 N=46 才 -23%；
+**Workload-specific 結果**（A/B/C × {1a orig, 1b vacuum, 1c type-aware, churned}，
+數字全部從 dense N=0..92 全 sweep 切片，內部一致）：
+- **A on 1a**: N=5/10 plateau **-41~42%**（dense 找到 cost-effective sweet spot）；
+  U 型曲線存在但寬而平、不是 sharp minimum
+- **A on 1b vacuum**: N=5 起就 plateau **-21%**；**dense 找到 1b 真正最佳 N=62 -31%**
+  （不在原 sparse 6 個 N 採樣裡）
+- **A on 1c**: layers_N 升級為 **N=5..92 全 plateau 在 -73~75%**（U 型曲線消失；
+  TA 把 interior 全集中到檔頭，任何 N≥5 都 cover）
+- **B on 1a/1b**: N=5~92 全 plateau 在 **-51~53%**（沒有 U 型曲線；leaf-fault 主導）
+- **B on 1c**: 比 1a/1b 弱一半，**N=5 -11%、N=46 -27%（sparse 6-pt 內最佳）；
+  dense 找到 1c 真正最佳 N=26 -36%**（仍比 1a/1b 的 -52% 差）；
   跟第七維「1c × B baseline 變慢」、第十一維「1c × 2f SLRU 蓋掉 B penalty」同源
-- **C 乾淨 DB on 1a/1b**: N≤46 plateau ~15%，**N=92 跳到 -46%**（hot interior
-  在 file 中段，按 offset 排 top-N 完全選錯 page）
-- **C on 1c**: **任何 N≥5 都 -29~32%**（N=46 最佳 -32%），N=92 反而退回 -10%
-  （inverted cliff）；TA 解掉 C「必須載全 92 個」的問題
-- **C churned DB**: N≤46 plateau ~10%，**N=92 跳到 -54%**（churn 不改變這個
+- **C 乾淨 DB on 1a/1b**: N≤46 plateau **~-10%**，**N=92 跳到 -45~53%**（hot interior
+  在 file 中段，按 offset 排 top-N 完全選錯 page）；**dense 找到 1b 真正最佳 N=87 -57%**
+- **C on 1c**: **N=5 就拿到 -46%**，N=46 略退 -40%，N=92 達到 -50%（最佳）；
+  TA 解掉 C「必須載全 92 個」的 cost-effective 問題（N=5 拿到 92% 的好處）
+- **C churned DB**: N≤46 plateau **~-11~15%**，**N=92 跳到 -58%**（churn 不改變這個
   結論，反而把 N=92 的相對優勢拉大）
-- **A churned DB** (第十八維, B2 補測): N=5 已到 plateau **-90.7%**、N=92 **-91.4%**；
-  跟乾淨 DB 上 A 的 N=5 甜蜜點同形 — **churn 不改變 Zipfian 熱點分佈**
-- **B churned DB** (第十八維, B2 補測): N=5 接近 plateau **-45.9%**、N=92 **-49.2%**；
-  跟 C × churn 的 -54% 同級 — **兩個 cold-leaf workload 的 churn N-sweep
+- **A churned DB** (第十八維, B2 補測): N=5 已到 plateau **-92.3%**、N=10 最佳 **-92.9%**、
+  N=92 **-92.7%**；跟乾淨 DB 上 A 的 N=5 plateau 同形 — **churn 不改變 Zipfian 熱點分佈**
+- **B churned DB** (第十八維, B2 補測): N=5 -50.3%、**N=20 最佳 -51.3%**、N=92 -50.3%；
+  跟 C × churn 的 -58% 同級 — **兩個 cold-leaf workload 的 churn N-sweep
   plateau 都卡在 -50% 左右**（leaf miss 是上限）
-- **Dense N=0..92 全 sweep** (第十九維，rigor 補測，獨立 harness)：把每個
-  (workload × layout) 從 6 個 N 補成 93 個 × 3 reps，共 ~5,580 個額外 benchmark。
-  **9/12 cell 結論不變**，但 3 個 cell 漏掉真正最佳 N——**A × 1b vacuum 在 N=62
-  是 -31%**（sparse 找 N=5 只 -21%）、**B × 1c ta 在 N=26 是 -36%**（sparse 找
-  N=46 -27%）、**C × 1b vacuum 在 N=87 是 -57%**（sparse 找 N=92 -53%）。
-  ⚠️ 第十九維用獨立 harness 跑、絕對 µs 跟上面 bullet 不可直接比；只看「dense
-  sweet spot 落在哪個 N」。U-shape 是寬 plateau + 雜訊，不是 sharp minimum
+- **Dense N=0..92 全 sweep** (rigor 補測, ~5,580 個 benchmark)：本 bullet 區
+  的所有數字都從這個 dense run 切出 N ∈ {1, 5, 10, 20, 46, 92} 6 個點重算
+  （早期 sparse 跑跟 dense 用了同個 harness 但相隔三週，絕對 µs 略飄移；切片
+  讓所有 cell 用同個 machine state）。**3 個 cell 漏掉真正最佳 N（不在 sparse
+  6 個採樣裡）：A×1b N=62 -31% / B×1c N=26 -36% / C×1b N=87 -57%**——這 3 個
+  sweet spot 跟 sparse best 差距 ≤12pp，原 sparse 結論沒被推翻、只是次優
 - **Z (Zipfian low-key, keys [1,1000])**: 跟 A 結果同形，差異 ≤ 5pp（1a 最佳
   N=20 −31%、1b 最佳 N=5 −31%、1c 任何 N≥5 都 −69~72%，N=92 最佳 −72%）；
   **N=1 universally worse** than baseline by ~+22% on 1a/1b（純 madvise syscall
