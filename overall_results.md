@@ -28,6 +28,16 @@
 > + [prefetch_churn/runs_nsweep_full_{a,b,c}/](prefetch_churn/)；
 > 圖: [Figure 11](figures/out/11_nsweep_full.png) / [Figure 12](figures/out/12_nsweep_full_churn.png)。
 >
+> **Preprocessing / prefetch overhead**：每個 dimension 的 table 只報 `first_query_us`
+> （第一筆 query 本身的時間），**不包含 prefetch tool 自己跑的時間**。所有
+> (tool, layout, workload, strategy) 組合的 prefetch overhead 已離線量過、存
+> 在 [calibration/prefetch_time_summary.csv](calibration/prefetch_time_summary.csv)
+> （351 cells × 3 reps 取 median）。要算「端到端 cold start」就把 prefetch_time
+> 加上 first_query。**參考級距**：layers_5 ≈ 1-2 µs、layers_92 ≈ 14 µs、
+> 2d ≈ 2-6 µs、2e_K10 ≈ 5-8 µs、2e_K500 ≈ 80 µs、**2f SLRU 1,200-1,900 µs**
+> （2f overhead 比 first_q 大 80-130 倍，是真正影響「真實 cold start」的策略）。
+> 細節見 [calibration/README.md](calibration/README.md)。
+>
 > 不同實驗用的 cold-start 機制不同（`sudo drop_caches` vs
 > `posix_fadvise(POSIX_FADV_DONTNEED)`），絕對 µs **不能跨表比較**，但
 > 同一表內的相對改善百分比是可靠的。每節都標明資料來源。
