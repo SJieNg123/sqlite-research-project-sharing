@@ -1,5 +1,10 @@
 # Overall Strategies — 現有策略總覽
 
+> 🔰 **測試流程詳解**：本檔講「每個策略是什麼」。想知道「**每個策略到底是怎麼
+> 測出來的**」（共用的 benchmark_harness 7 步引擎、無 sudo 冷啟動、結構派 vs
+> 歷史派的前置、每個策略的確切 post-cold-script 指令），請看
+> [strategies_explained.md](strategies_explained.md)。
+
 這個 repo 嘗試了三類正交的策略，每類處理不同的層級：
 
 1. **Layout 策略**（build-time，一次性，影響整個 file 的物理排列）

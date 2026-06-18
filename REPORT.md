@@ -1,4 +1,4 @@
-# SQLite 冷啟動 Prefetch 研究 — Paper Draft
+# SQLite 冷啟動 Prefetch 研究
 
 > 文獻 / 完整實驗推導見配套文件：
 > - [overall_results.md](overall_results.md) — 19 維實驗的完整數字
