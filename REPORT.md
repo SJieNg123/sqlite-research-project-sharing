@@ -21,10 +21,12 @@
 
 ## 1. Introduction
 
-SQLite 作為 embedded database 的事實標準，被廣泛部署於行動裝置、IoT 與桌面
-應用中——每一次 app 啟動、每一次裝置自休眠喚醒、每一次 background process
-重新被排程，使用者所感知的「第一筆查詢延遲」（first-query latency）即由
-SQLite cold-start 性能直接決定。然而，SQLite cold-start 讀取路徑的系統性
+SQLite 是當今部署最廣的資料庫引擎——根據 SQLite 開發團隊與學界合著的最新
+評估 [Gaffney+22]，全球**估計超過 1 兆個 SQLite 資料庫處於使用中**，幾乎
+所有智慧型手機、瀏覽器、汽車與電視都內嵌 SQLite。在這個規模下，每一次
+app 啟動、每一次裝置自休眠喚醒、每一次 background process 重新被排程，
+使用者所感知的「第一筆查詢延遲」（first-query latency）即由 SQLite
+cold-start 性能直接決定。然而，SQLite cold-start 讀取路徑的系統性
 優化在學術界仍少有著墨：現有 SQLite 文獻多聚焦於寫入路徑（fsync、WAL、
 journal mode），而跨領域的 prefetch 工作或不感知 SQLite 內部結構（OS-level
 readahead，繼承 [Smith 1978] 的 sequential pattern detection 主線），或要求
@@ -92,6 +94,12 @@ conclusion；§9 references。
 ## 2. Background and Related Work
 
 ### 2.1 SQLite B+tree storage 與 cold-start mechanics
+
+SQLite 的整體架構（SQL compiler / VDBE / B-tree / pager / OS interface）
+與儲存格式詳見其官方文件與 [Gaffney+22] 提供的最新完整評估——後者由 SQLite
+創始團隊（Hipp、Kennedy、Brasfield @ sqlite.org）與 UW-Madison 學界合著，
+是目前學術界對 SQLite 最 authoritative 的描述。本節僅萃取與 cold-start
+read 路徑相關的細節。
 
 SQLite 把每個 logical table 跟 index 存成一棵 B+tree、用 4 KB page 為基本單位
 循環儲存在 single file 裡。Page 分四種：
@@ -265,6 +273,20 @@ journal mode / mmap / WAL 等寫入路徑參數調校。
 此外，本研究的 type-aware layout rewriter (§4.1.1c) 也是該領域 novel——
 既有 SQLite mobile-optimization fork 無 page-type aware physical reorder
 的設計。
+
+**[Gaffney+22] SQLite: Past, Present, and Future** (PVLDB 15(12)) ——
+SQLite 創始團隊與 UW-Madison 合著的最新完整 SQLite 評估，涵蓋 OLTP (TATP) /
+OLAP (SSB) / blob 三種 workload，並以 Bloom filter Lookahead Information
+Passing (LIP) 把 SSB 加速 4.2×。**重要的是其 evaluation 方法論**：所有 SSB
+查詢前都明確執行 `SELECT *` 預熱 buffer pool（原文 §4.2.1: "*before running
+the SSB queries, we scan each table with a SELECT * query, ensuring that
+the buffer pool is populated*"）。這是學界標準作法，但其副作用是
+**cold-start latency 被當作 noise 系統性地排除在 measurement 之外**——即便
+是 SQLite 創始團隊自己參與的最新 academic 評估，也未對 cold-start 讀取路徑
+做系統性量化。這直接驗證本研究的 niche：cold-start read latency 不僅在
+mobile SQLite 寫入優化文獻中缺席（§2.3.3 上述 4 篇），在 SQLite 整體
+academic evaluation 文獻中亦被視為應規避的測量噪音。本研究是針對此空白的
+直接回應。
 
 #### 2.3.4 SSD / NVMe page-aware optimization
 
@@ -836,6 +858,7 @@ preprocessing 1.8 ms 比 first-q 14 µs 大兩個數量級，**真實 cold start
 | [Kang+13] | Kang, W.-H., Lee, S.-W., Moon, B. "X-FTL: Transactional FTL for SQLite Databases." *SIGMOD* (2013), pp. 97–108 | §2.3.3——mobile SQLite write-optimization 同 lineage，介入層在 **FTL**（Flash Translation Layer）。Oh+15 的近鄰先行工作 |
 | [Kim+12] | Kim, H., Agrawal, N., Ungureanu, C. "Revisiting Storage for Smartphones." *USENIX FAST* (2012), pp. 17–29 | §2.3.3——mobile storage performance 奠基分析論文，建立「SQLite + journaling on flash」是 mobile I/O 主要瓶頸的認識 |
 | [Jeong+13] | Jeong, S., Lee, K., Lee, S., Son, S., Won, Y. "I/O Stack Optimization for Smartphones." *USENIX ATC* (2013), pp. 309–320 | §2.3.3——mobile I/O stack 層級優化，write-side focus |
+| [Gaffney+22] | Gaffney, K. P., Prammer, M., Brasfield, L., Hipp, D. R., Kennedy, D., Patel, J. M. "SQLite: Past, Present, and Future." *PVLDB* 15(12):3535–3547 (2022). DOI: 10.14778/3554821.3554842 | §1 + §2.1 + §2.3.3 multi-purpose anchor——SQLite 創始團隊（Hipp / Kennedy / Brasfield @ sqlite.org）+ UW-Madison 合著的最新 authoritative SQLite 評估。§1 引用其 ubiquity 統計（>1T 資料庫）；§2.1 引用為 SQLite 架構標準描述；§2.3.3 引用其 SSB evaluation 方法論——**他們明確 `SELECT *` 預熱 buffer pool**，是「cold-start 在 SQLite 學術文獻中被系統性排除」的直接證據 |
 | [Crotty+22] | Crotty, A., Leis, V., Pavlo, A. "Are You Sure You Want to Use MMAP in Your Database Management System?" *CIDR* (2022) | §2.3.5 anchor——對 file-backed mmap-as-DBMS-substrate 的系統性批判（eviction control 喪失、無 async I/O、I/O 錯誤難處理、fast NVMe scalability 不足）。**重要的是**：其 §6 結論明確列出 "maybe use mmap" 的兩項條件——read-only + fits in memory——本研究 cold-start use case 完全符合；§3.4 又親口承認 mmap "lower total memory consumption" 的優勢。**Crotty+22 不僅不否定我們，反而 explicitly 背書我們的 design choice** |
 | [Leis+23] | Leis, V., Alhomssi, A., Ziegler, T., Loeck, Y., Dietrich, C. "Virtual-Memory Assisted Buffer Management." *SIGMOD* (2023) | §2.3.5——Crotty+22 的後續回應。anonymous mmap + DBMS-controlled `madvise(DONTNEED)` eviction + 自製 Linux kernel module (exmap) 解 TLB shootdown 跟 page allocator scalability。我們用同 family OS primitive 但操作頻率低 4 個數量級以上（cold-start 一次 ~92 calls vs 他們的 >1M ops/s），碰不到他們解的瓶頸 |
 | 其他 papers / blog posts | §2.3 candidate reading list | survey 進度見 `related_work_reading_list.md`（待建立）|
