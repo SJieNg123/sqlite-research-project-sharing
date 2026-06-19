@@ -170,19 +170,21 @@ hint = kernel 有更多機會在 first-q 之前 finish I/O**」的證據，**不
 > 同一個 binary 同一個算法、效果差異純粹來自 layout 賦予的物理排列。
 
 **狀態：** 已完成，N=1/5/10/20/46/92 全跑過。
-**結果（Workload A，原始 layout）：wide-bottom U 形**——
-N=1→N=5 急降（coverage 不足），N=5..N≈46 plateau（interior 已 cover、
-Zipfian 跑開後 hot leaves 自然熱），N>46 略升（async madvise 來不及完成）：
+**結果（Workload A，原始 layout）⚠️ 下表是舊 P3 era 數字，pending P0 rerun**：
+P3 era 呈「N=5 sweet spot、N=92 退化」單一 U 形敘事；但下方 bullet 列出的當前
+P1 dense sweep 在多數 cell 已退化為 plateau 或反向（A on 1b 真正最佳 N=62、
+C on 1a N=92 大勝）。**N 行為形狀與其因果敘事都待 P0 master rerun 後重新評估**。
 
-| N | syscalls | 改善 |
+| N | syscalls | 改善（P3 era）|
 |---:|---:|---:|
 | 1 | 1 | -48% |
-| **5** | **5** | **-54%** ← 甜蜜點 |
+| **5** | **5** | **-54%** ← P3 era 甜蜜點 |
 | 10 | 10 | -39% |
 | 92 | 92 | -31% |
 
-**結論：** N=5 是 syscall overhead 與 coverage 的最佳折衷**僅在 Workload A
-上**。配合 type-aware layout 可達 -69%。
+**P3 era 結論**：N=5 是 P3 上 Workload A 的 sweet spot；P1 dense sweep 已部分
+推翻此結論（見下方 bullet）。配合 type-aware layout 可達 -69%（這個方向 P1
+仍成立）。
 
 **Workload-specific 結果**（A/B/C × {1a orig, 1b vacuum, 1c type-aware, churned}，
 數字全部從 dense N=0..92 全 sweep 切片，內部一致）：
