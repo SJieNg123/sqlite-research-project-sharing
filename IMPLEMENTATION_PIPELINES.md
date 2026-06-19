@@ -20,7 +20,7 @@
 | **P1**（多數）| `layout_rewriter` / `prefetch_access` / `prefetch_slru` / `prefetch_warmer` 各 `runs/runmatrix*.sh` | harness `--cold-advice dontneed` (MADV_COLD→PAGEOUT→DONTNEED) + `--drop-caches-script evict_helper.sh` → `evict` binary → **posix_fadvise(POSIX_FADV_DONTNEED)**（單檔，不需 sudo）| 名字叫 "drop-caches-script" 但實際是 fadvise；residency 驗證有時跑有時沒跑 |
 | **P2** | `prefetch_churn/` 全部 Python orchestrator | `--benchmark-cold-advice none`（**跳過 harness MADV chain**）+ evict binary（posix_fadvise）+ `--no-run-residency-checker`（**verify 也關掉**） | 跟 P1 差兩個關鍵步驟，**生出的 baseline µs 系統性不同** |
 | **P3**（歷史，可能仍在 CSV 裡）| 早期 prefetch_vacuum（已棄用但 CSV 沒重跑）| `sync && echo 3 > /proc/sys/vm/drop_caches`（**真 system-wide drop，需 root**）| `strategies_explained.md:57` 自承「早期用這套」、「絕對 µs 不能跨表比」——舊數字仍在 `overall_results.md` |
-| **P0**（**推薦新標準**，2026-06-19 起才可能）| 尚未使用 | harness MADV chain + **`/usr/local/sbin/drop-caches`**（setuid wrapper，全機 drop，u03 可跑）+ `residency_checker` 強制驗證 0% | — |
+| **P0**（**推薦新標準**）| 尚未使用 | harness MADV chain + **`/usr/local/sbin/drop-caches`**（setuid wrapper，全機 drop，u03 可跑）+ `residency_checker` 強制驗證 0% | — |
 
 **Gold standard 缺什麼**：P0 還沒被任何 batch 用過。重跑必須採 P0。
 
@@ -34,7 +34,7 @@
 | 2. 全機 page cache drop | ❌ 只 per-file fadvise | ❌ 只 per-file fadvise | ✅ `echo 3 > drop_caches` | ✅ `/usr/local/sbin/drop-caches` |
 | 3. Residency verify (mincore == 0) | ⚠️ 有 binary 但不一定跑 | ❌ `--no-run-residency-checker` | ❌（沒驗）| ✅ 強制 |
 | 4. 跨 sub-project 可比性 | ⚠️（同 P1 內部 OK，跨 P1/P2 不可比）| ⚠️（同上）| ❌（跟 P1/P2 完全不可比）| ✅ |
-| 5. u03 可跑 | ✅ | ✅ | ❌（u03 沒 sudo）| ✅（**2026-06-19 後**）|
+| 5. u03 可跑 | ✅ | ✅ | ❌（u03 沒 sudo）| ✅|
 
 **距 P0 差距總結**：P1 缺「全機 drop + 強制 verify」；P2 缺「MADV chain + 全機 drop + 強制 verify」；P3 缺「MADV chain + verify」且 u03 跑不了。
 
@@ -107,16 +107,23 @@ P2 churn 還要把 `--benchmark-cold-advice none` → `dontneed`、`--no-run-res
 
 ## §5. 策略實作 vs 文件定義的 mismatch
 
+> **狀態（2026-06-19 更新）**：M1 / M5 / M8 已在 commit `691bd6b`（P0 pipeline
+> migration）解決——本表已移除這三條。**編號保留不重排**以維持跨檔引用穩定。
+> 剩餘 5 條（M2 / M3 / M4 / M6 / M7）仍待處理。
+
 | # | 文件宣稱 | 程式碼實作 | 落差 |
 |---|---|---|---|
-| **M1** | `--drop-caches-script` 名字暗示「drop OS caches」 | 實際呼叫的 helper script 是 `evict` binary → posix_fadvise（per-file）| ❌ 命名誤導，不是真正的 drop_caches |
 | **M2** | `strategies_explained.md:39` 說「製造冷啟動」步驟 = MADV chain + cold helper | prefetch_churn 用 `--benchmark-cold-advice none` 跳過 MADV chain | ❌ prefetch_churn 偏離 doc 宣稱的 protocol |
 | **M3** | `strategies_explained.md:5` 七策略「共用同一套引擎」 | warmer.c 用 pread（不是 madvise），跟其他六策略**不同保證等級** | ⚠️ 是「同一個 harness 呼叫」但 prefetch 機制其實異質 |
 | **M4** | `strategies_explained.md:57` 親口承認「早期 prefetch_vacuum 用 sudo drop_caches」「絕對 µs 不能跨表比」 | `overall_results.md` 與 `REPORT.md` 仍把不同 pipeline 的 µs 數字混在一張表裡 | 🔴 文件自承不可比，但仍然在比 → [CONTRADICTIONS.md #24] |
-| **M5** | `--drop-caches-use-sudo` flag 暗示「會用 sudo」 | u03 沒 sudo，所有 production scripts 都用 `--no-drop-caches-use-sudo`；唯一用 sudo 的 `prefetch_churn/drop_caches.sh` 從未在 u03 上執行 | ⚠️ flag 存在但實務上**從未被啟用過**，整個 sudo 路徑死碼 |
 | **M6** | residency_checker 存在於 4 個位置：`./residency_checker`、`prefetch_churn/residency_checker`、`residency_checker/residency_checker.c`、`prefetch_slru/runs/residency_checker` | prefetch_churn 用 `--no-run-residency-checker` 主動關掉 | ⚠️ 驗證 infrastructure 有，但**使用率不一致** |
 | **M7** | 文件說「7 個策略」（`strategies_explained.md:9`）| 實際算下來 binary 有 5 個（prefetch、prefetch_layers、prefetch_access、prefetch_slru、warmer），策略變體 ≥ 8（含 3a/3b ratio）| ⚠️ count 對不上但屬於 [CONTRADICTIONS.md R3] 已調和項 |
-| **M8** | `WORKLOAD_FILE_REFERENCE.md:51,145` 命令簽章 `prefetch_layers <db> <classify> 92 4096 range` | 實際 `prefetch_layers.c:32-35` 只吃 4 個 arg（`db classify N page_size`，沒有 `range` 字串）| 🔴 文件命令簽章錯誤 — [CONTRADICTIONS.md #26] |
+
+**已解決條目**（commit `691bd6b`，2026-06-19）：
+
+- ~~**M1** `--drop-caches-script` 命名誤導~~ → helper scripts 已全部改成 `exec /usr/local/sbin/drop-caches`，現在實際上就是 system-wide drop
+- ~~**M5** `--drop-caches-use-sudo` 死碼~~ → flag 已從 harness C、Python orchestrator、所有 shell scripts 移除
+- ~~**M8** `prefetch_layers` 5-arg 命令簽章錯誤~~ → `WORKLOAD_FILE_REFERENCE.md` §1.4 / §3 已更正成 `prefetch` (3-arg) vs `prefetch_layers` (4-arg) 兩 binary 分開
 
 ---
 
