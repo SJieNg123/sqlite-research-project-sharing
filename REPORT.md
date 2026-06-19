@@ -752,6 +752,18 @@ first query 仍保住，但 avg/majflt 視 layout 與策略而定。*
   跑關鍵 cell，量化我們 §6.4 「machine drift」估計的可信度。
 - **NVMe SSD page-aware GC 影響**：long-term 跑 large churn (multi-million
   ops)，看 SSD 內部 GC 對 interior page layout 的影響。
+- **Continuous prefetch / steady-state hot-set maintenance**：本研究的
+  prefetch 為 cold-start 一次性事件（每次 ~92 `madvise(WILLNEED)` call、
+  單 process）。若擴展為持續性 daemon 不斷依 `mincore()` snapshot 維護
+  hot-set（cadence ↓ 至 10 ms、hot-set ↑ 至 10K page），總 madvise 頻率將
+  進入 **>1 M ops/s** regime——剛好踩進 [Leis+23] 解的 TLB shootdown 與
+  page allocator scalability 邊界。然而 [Leis+23] 的 fix（**exmap** Linux
+  kernel module）需 **root 權限** + `modprobe` 部署，與本研究 application-
+  side 非侵入式部署假設不相容；若要追求 continuous prefetch 方向，需重新
+  評估部署模型（可接受 kernel module）或與 [Leis+23] 做 kernel-level
+  co-design。本研究刻意把 design point 鎖在「低頻 + 無 root」這個角落，
+  與 [Leis+23] 的「高頻 + kernel module」角落在 design space 上正交，互為
+  補集。
 
 ---
 
