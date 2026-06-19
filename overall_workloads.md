@@ -96,6 +96,12 @@ scan <id> <len>
 readmodifywrite <id>
 ```
 
+> Op string 格式 reference 自 [YCSB-cpp](https://github.com/ls4154/YCSB-cpp)
+> （C++ port of YCSB）。Workload A 對應 YCSB-C profile（read-only,
+> Zipfian over single table），Workload B 對應 YCSB-A 的 read 部分
+> （uniform random read）。C 跟 D 是我們自己加的（high-key locality
+> 與 write-heavy churn generator），不在 YCSB 原本的 6 個 profile 裡。
+
 ---
 
 ## Workload A — Zipfian Point Read（YCSB-C 風格）
