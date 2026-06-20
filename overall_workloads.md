@@ -302,6 +302,10 @@ RAM-pressure 矩陣現已涵蓋 **9 個 (workload × layout) cell × 7 個策略
 的 48-cell 縮影矩陣完全被取代，且新舊矩陣在 A × 1a × 4 策略上誤差 ≤ 3 µs
 （交叉驗證）。
 
+
+# New Workloads
+請參考new_workloads 資料夾底下的 README.md
+
 **Dense N=0..92 全 sweep（第十九維）** 進一步把每個 (workload × layout) 的
 layers_N 從 6 個採樣點補成全 93 個值 × 3 reps：clean DB 2,511 cells + churn DB
 3,069 cells = **~5,580 額外 benchmark**。發現 sparse 6-pt 在 9/12 cell 結論正確，
