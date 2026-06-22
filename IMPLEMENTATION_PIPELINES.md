@@ -56,8 +56,8 @@
 
 | # | 項目 | 鎖定值 | 為什麼 |
 |---|---|---|---|
-| F1 | SQLite pager cache | `PRAGMA cache_size=0` | 不讓 SQLite 在 heap 偷存頁、繞過冷啟動（已寫死 [`:1055`](benchmark_harness/benchmark_harness.c#L1055)）|
-| F2 | SQLite 讀取路徑 | `PRAGMA mmap_size=檔案大小` | 讀走 mmap → OS page cache → drop-caches 管得到、prefetch 暖同一份（已寫死 [`:1052`](benchmark_harness/benchmark_harness.c#L1052)）|
+| F1 | SQLite pager cache | `PRAGMA cache_size=0` | 不讓 SQLite 在 heap 偷存頁、繞過冷啟動（已寫死 [`:1068`](benchmark_harness/benchmark_harness.c#L1068)）|
+| F2 | SQLite 讀取路徑 | `PRAGMA mmap_size=檔案大小` | 讀走 mmap → OS page cache → drop-caches 管得到、prefetch 暖同一份（已寫死 [`:1065`](benchmark_harness/benchmark_harness.c#L1065)）|
 | F3 | 冷啟動清快取 | `/usr/local/sbin/drop-caches` = `sync; echo 3 > /proc/sys/vm/drop_caches`（全機，pagecache+dentry+inode）| 全機 drop 才是真冷；echo 3 一併清 dentry/inode |
 | F4 | CPU governor | `performance`（關 turbo 變頻）；**u03 例外見下** | 冷啟動 µs 對 CPU 頻率敏感 |
 | F5 | **`read_ahead_kb`** | **128（裝置預設）為主值；外加 {0,128,512} 敏感度掃描** | **直接決定一次 fault/madvise 順帶載幾頁**——range 封頂、U 型、delivery% 全跟它糾纏（見 §3.7）|
@@ -105,7 +105,7 @@ benchmark_harness \
 ```
 
 順序固定 `cold-advice → drop-caches → post-cold-script → (★內建 mincore) → first query`
-（[`:1244-1247`](benchmark_harness/benchmark_harness.c)），prefetch 一定在 evict 後 / query 前，不會被清掉。
+（[`:1405-1440`](benchmark_harness/benchmark_harness.c#L1405)），prefetch 一定在 evict 後 / query 前，不會被清掉。
 
 ### §3.3 兩臂設計：每個 cell 都跑 pread + async
 
@@ -125,7 +125,7 @@ benchmark_harness \
 ### §3.4 residency 驗證：★ 內建進 harness（修掉「驗證污染量測」）
 
 新增 harness flag `--verify-hotset <hotset.csv>`：harness 用既有的 `fill_mincore_vec`
-（[`:504`](benchmark_harness/benchmark_harness.c#L504)）在**兩個內部時點各做一次快速 mincore**（~µs）：
+（[`:522`](benchmark_harness/benchmark_harness.c#L522)）在**兩個內部時點各做一次快速 mincore**（~µs）：
 
 1. drop-caches 之後、post-cold-script 之前 → `cold_pct`（應 ≈0，>1% 該 run 作廢）
 2. post-cold-script 之後、**op[0] 之前** → `delivery_pct`，寫進 run record
@@ -140,23 +140,30 @@ benchmark_harness \
 
 ### §3.5 reps / 聚合 / 交錯
 
-- **reps**：pread 臂 **3**（deterministic）；async 臂 **10**（壓 delivery 變異）；**兩臂都丟掉第 1 rep**（首跑有額外 code-path 冷成本）。
+- **reps**：pread 臂 **5**（丟 warmup 後 n=4，p95 才有意義）；async 臂 **10**（壓 delivery 變異）；baseline 臂 **10**；**全部丟掉第 1 rep**（首跑有額外 code-path 冷成本）。summary 對 n<4 的組不報 p95。
 - **交錯**：**rep-major**——全 cell 跑完 rep1 再 rep2…，把機器慢漂移攤平到所有 cell，而非集中某幾個。
 - **聚合**：報 **median + p95 + min + stdev**（冷啟動長尾，只報 median 會騙人）。
 
-### §3.6 每 cell 輸出欄位（統一一張大表）
+### §3.6 輸出欄位（實際 CSV schema，`arm` 是 row 維度而非欄）
 
+`raw_p0.csv`（每 (workload,db,strategy,**arm**,rep) 一列；`arm ∈ {pread, async, baseline}`）：
 ```
-workload, db, strategy, ra_kb, rep,
-  cold_pct,                       # ① 應 ≈0
-  fq_pread,                       # 天花板（oracle）
-  fq_async, delivery_pct,         # 實務 fq + 當時載幾成
-  preproc_async,                  # async prefetch 自身開銷（layers/2d/2e ≈ µs；2f ≈ 7.5ms）
-  e2e_async,                      # = preproc_async + fq_async（SLRU 的陷阱在此現形）
-  avg_us, majflt, minflt
+workload, db, strategy, arm, ra_kb, rep, warmup,
+  cold_pct,        # ① drop 後、prefetch 前殘留（應 ≈0；>1% 由彙整剔除）
+  delivery_pct,    # ② prefetch 後、首查前命中率（baseline = readahead 單獨交付了幾成）
+  first_query_us,  # TTFQ
+  preproc_us,      # = warmer_us（baseline=0；layers/2d/2e ≈ µs；2f ≈ 7.5ms）
+  e2e_us,          # = preproc_us + first_query_us
+  avg_us, majflt, minflt, load, memavail_kb
+```
+`summary_p0.csv`（每 (workload,db,strategy,arm) 一列，丟 warmup、cold_pct>1% 剔除後彙整）：
+```
+workload, db, strategy, arm, n, ra_kb,
+  fq_median, fq_p95, fq_min, fq_stdev,   # p95 在 n<4 時留空
+  delivery_pct_median, preproc_us_median, e2e_median, cold_pct_max
 ```
 
-Headline 三句：①「可達上界(oracle) `fq_pread`」②「實務最佳：async，端到端 `e2e_async`（layers_5 贏、SLRU 因 7.5ms preproc 出局）」③「`fq_async − fq_pread` = async 作為 hint 的 delivery 代價」。
+Headline 三句（從 arm 維度導出）：①「可達上界(oracle) = `pread` 臂的 `fq_median`」②「實務最佳 = `async` 臂的 `e2e_median`（layers_5 贏、SLRU 因 7.5ms preproc 出局）」③「`fq_async − fq_pread` = async 作為 hint 的 delivery 代價」；改善% = (baseline − strategy) / baseline。
 
 ### §3.7 `read_ahead_kb` 敏感度掃描（當「發現」報，不只 control）
 
@@ -357,7 +364,7 @@ checksum 凍結清單 `p0_runs/hotset_freeze.sha256`;master batch 前用 `run_p0
 
 ## §9. 引用
 
-- `benchmark_harness/benchmark_harness.c` — 主 harness（行 39-41 cold_advice_t enum、行 138-144 flag 說明、行 738-753 MADV chain 實作）
+- `benchmark_harness/benchmark_harness.c` — 主 harness（行 36-41 cold_advice_t enum、行 136-144 flag 說明、行 816-867 MADV chain 實作 `run_madvise_step`/`apply_cold_advice`）
 - `layout_rewriter/runs/evict.c` — 「drop-caches」helper 實際就是 posix_fadvise（行 12）
 - `strategies_explained.md` — 行 5 / 22 / 39 / 49-57 自承多機制並存
 - `prefetch_churn/sqlite_prefetch_churn_experiment.py` — 行 455-463、870-877、1260-1267 prefetch_churn 偏離 P1 的證據

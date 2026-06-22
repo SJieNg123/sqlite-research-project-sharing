@@ -57,7 +57,6 @@ GEN_HOTLEAVES     = ROOT / "prefetch_access/runs/gen_hotleaves.py"
 SLRU_RUNS         = ROOT / "prefetch_slru/runs"      # canonical base residency (2f/2d source)
 ACCESS_RUNS       = ROOT / "prefetch_access/runs"    # hot2e curated files (2e source)
 FREEZE_PATH       = ROOT / "p0_runs/hotset_freeze.sha256"
-TASKSET           = shutil.which("taskset")          # core pin for freq-warm consistency
 
 DBS = {
     "orig":   ROOT / "layout_rewriter/runs/test.db",
@@ -186,16 +185,12 @@ def write_deliver_script(workdir, db, hotset, method):
     return path
 
 
-def _taskset_prefix(args):
-    """Pin the harness to one core so the freq-warmed core is the one that runs op[0]."""
-    if getattr(args, "cpu", -1) is not None and args.cpu >= 0 and TASKSET:
-        return [TASKSET, "-c", str(args.cpu)]
-    return []
-
-
 def _harness_hardening(args):
-    """Flags every P0 measurement run carries: read-only open, F8 assert, freq ramp."""
-    return ["--readonly", "--require-read-first", "--warm-cpu-ms", str(args.warm_cpu_ms)]
+    """Flags every P0 measurement run carries: read-only open, F8 assert, freq ramp, and
+    self-pinning to one core (harness sched_setaffinity, so the warmed core == op[0]'s core
+    without depending on an external taskset wrapper)."""
+    return ["--readonly", "--require-read-first",
+            "--warm-cpu-ms", str(args.warm_cpu_ms), "--cpu", str(args.cpu)]
 
 
 def _sys_load():
@@ -218,8 +213,7 @@ def _sys_load():
 def run_one(db, workload, hotset, method, recdir, args, use_drop_caches=True):
     """One harness invocation for one arm; returns parsed metrics (or None on failure)."""
     deliver = write_deliver_script(recdir, db, hotset, method)
-    cmd = _taskset_prefix(args) + [
-           str(BH), "--db", str(db), "--workload", str(workload),
+    cmd = [str(BH), "--db", str(db), "--workload", str(workload),
            "--output", str(Path(recdir) / "ops.csv"),
            "--record-dir", str(recdir),
            "--cold-advice", "dontneed",
@@ -244,16 +238,20 @@ def run_one(db, workload, hotset, method, recdir, args, use_drop_caches=True):
             pass
 
 
-def run_baseline(db, workload, recdir, args):
+def run_baseline(db, workload, recdir, args, verify_hotset=None):
     """No-prefetch cold first-query = the improvement-% denominator.
     Drops caches, runs the workload with NO post-cold-script (nothing warmed).
-    preproc=0, e2e=fq; no hotset so cold/delivery pct are left blank."""
-    cmd = _taskset_prefix(args) + [
-           str(BH), "--db", str(db), "--workload", str(workload),
+    preproc=0, e2e=fq. A reference hotset is passed to --verify-hotset so the baseline
+    also emits verify_cold_pct -> the SAME cold gate applies to the denominator (otherwise a
+    warm baseline silently inflates every strategy's improvement-%); delivery_pct then
+    reports what kernel readahead alone delivered."""
+    cmd = [str(BH), "--db", str(db), "--workload", str(workload),
            "--output", str(Path(recdir) / "ops.csv"),
            "--record-dir", str(recdir),
            "--cold-advice", "dontneed",
            "--drop-caches-script", DROP_CACHES] + _harness_hardening(args)
+    if verify_hotset is not None:
+        cmd += ["--verify-hotset", str(verify_hotset)]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         m = parse_metrics(r.stderr + "\n" + r.stdout)
@@ -543,7 +541,7 @@ def main():
     ap.add_argument("--no-baseline", action="store_true", help="skip the no-prefetch baseline arm")
     ap.add_argument("--outdir", default=str(ROOT / "p0_runs"))
     ap.add_argument("--ra-kb", type=int, default=128, help="read_ahead_kb to pin via p0_env.sh")
-    ap.add_argument("--cpu", type=int, default=2, help="taskset core to pin the harness to (-1 = no pin)")
+    ap.add_argument("--cpu", type=int, default=2, help="core the harness pins itself to via sched_setaffinity (-1 = no pin)")
     ap.add_argument("--warm-cpu-ms", type=int, default=10, help="busy-spin the pinned core this long before op[0]")
     ap.add_argument("--cold-pct-max", type=float, default=1.0, help="exclude cells whose cold check exceeds this %% from summary")
     ap.add_argument("--no-pin-env", action="store_true", help="skip p0_env.sh (still records)")
@@ -605,15 +603,30 @@ def main():
 
     # pre-build hotsets per cell (frozen inputs; reused across reps/arms)
     hotsets = {}
+    classify_cache = {}
     for w, ly, s in cells:
-        classify = load_classify(ly)
+        classify = classify_cache.get(ly) or classify_cache.setdefault(ly, load_classify(ly))
         pages = select_pages(s, w, ly, classify)
         if args.dry_run:
             hotsets[(w, ly, s["name"])] = (None, len(pages))
             continue
         dest = workdir / f"hotset_{w}_{ly}_{s['name']}.csv"
         npg = build_hotset(pages, classify, dest)
+        if npg == 0:
+            sys.stderr.write(f"  WARN empty hotset for {w}/{ly}/{s['name']} "
+                             f"-> verify_cold_pct won't emit, cold gate skipped\n")
         hotsets[(w, ly, s["name"])] = (dest, npg)
+
+    # baseline reference hotset per (workload,layout) = ALL db pages, used only for the
+    # baseline's --verify-hotset so the denominator gets the same cold_pct gate as the arms.
+    ref_hotsets = {}
+    if not args.dry_run and not args.no_baseline:
+        for w, ly in dict.fromkeys((w, ly) for w, ly, _ in cells):
+            classify = classify_cache.get(ly) or classify_cache.setdefault(ly, load_classify(ly))
+            ref = workdir / f"refhotset_{ly}.csv"
+            if not ref.exists():
+                build_hotset(set(classify.keys()), classify, ref)
+            ref_hotsets[(w, ly)] = ref
 
     if args.dry_run:
         print(env_line)
@@ -635,7 +648,7 @@ def main():
         base_note = "off" if args.no_baseline else f"{args.baseline_reps}+1warmup per (w,layout)"
         print(f"\nreps: pread {args.pread_reps}+1warmup, async {args.async_reps}+1warmup, "
               f"baseline {base_note}, rep-major.")
-        print(f"hardening: taskset cpu={args.cpu}, warm-cpu-ms={args.warm_cpu_ms}, "
+        print(f"hardening: pin cpu={args.cpu} (sched_setaffinity), warm-cpu-ms={args.warm_cpu_ms}, "
               f"readonly+require-read-first, cold-pct-max={args.cold_pct_max}.")
         return
 
@@ -681,7 +694,8 @@ def main():
             for w, ly in wl_layouts:
                 recdir = workdir / f"rec_baseline_{w}_{ly}"
                 recdir.mkdir(exist_ok=True)
-                m = run_baseline(DBS[ly], WORKLOADS[w], recdir, args)
+                m = run_baseline(DBS[ly], WORKLOADS[w], recdir, args,
+                                 verify_hotset=ref_hotsets.get((w, ly)))
                 if m is not None:
                     emit(m, w, ly, "baseline", "baseline", rep, warmup, preproc_override=0.0)
         for w, ly, s in cells:

@@ -19,6 +19,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <sched.h>
 #include <stdarg.h>
 #include <sqlite3.h>
 #include <stdbool.h>
@@ -86,6 +87,7 @@ typedef struct {
     bool readonly;           /* open DB read-only (clean for read-only TTFQ measurement) */
     bool require_read_first; /* F8: abort if workload op[0] is not a read */
     int  warm_cpu_ms;        /* busy-spin the measuring core this long before op[0] (freq ramp) */
+    int  cpu;                /* pin process to this core via sched_setaffinity (-1 = no pin) */
 } options_t;
 
 typedef struct {
@@ -153,6 +155,7 @@ static void usage(const char *prog) {
             "  --readonly                      Open DB read-only (clean for read-only TTFQ measurement).\n"
             "  --require-read-first            Abort if workload op[0] is not a read (F8).\n"
             "  --warm-cpu-ms <ms>              Busy-spin the pinned core this long before op[0] (freq ramp; default 0).\n"
+            "  --cpu <n>                       Pin process to core n via sched_setaffinity (default -1 = no pin).\n"
             "  --debug                         Print sync, madvise, drop-caches, and SQLite timing diagnostics.\n",
             prog);
 }
@@ -192,6 +195,7 @@ static void parse_args(int argc, char **argv, options_t *opts) {
     opts->cold_advice = COLD_ADVICE_DONTNEED;
     opts->sqlite_open_timing = SQLITE_OPEN_BEFORE_COLD;
     opts->schema_init_timing = SCHEMA_INIT_BEFORE_COLD;
+    opts->cpu = -1;
 
     for (int i = 1; i < argc; ++i) {
         const char *arg = argv[i];
@@ -251,6 +255,8 @@ static void parse_args(int argc, char **argv, options_t *opts) {
             opts->require_read_first = true;
         } else if (strcmp(arg, "--warm-cpu-ms") == 0 && i + 1 < argc) {
             opts->warm_cpu_ms = (int)parse_i64(argv[++i], "--warm-cpu-ms");
+        } else if (strcmp(arg, "--cpu") == 0 && i + 1 < argc) {
+            opts->cpu = (int)parse_i64(argv[++i], "--cpu");
         } else if (strcmp(arg, "--debug") == 0) {
             opts->debug = true;
         } else {
@@ -1179,10 +1185,25 @@ static void run_select_stmt(sqlite_ctx_t *ctx, sqlite3_stmt *stmt,
     }
 }
 
-/* Busy-spin the current (taskset-pinned) core for ~ms milliseconds so amd-pstate
- * ramps it to max frequency BEFORE the first timed query. Runs entirely outside the
- * timed region, so it cannot perturb the measurement -- it only removes the freq-ramp
- * bias that otherwise penalises the fastest (best-prefetched) cells most. */
+/* Pin the process to one core so the freq-warmed core IS the core that runs op[0].
+ * Self-pinning (vs an external taskset wrapper) means the guarantee can't be silently
+ * lost if the wrapper is missing. No-op for cpu < 0. */
+static void pin_to_cpu(int cpu) {
+    if (cpu < 0) {
+        return;
+    }
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    CPU_SET(cpu, &set);
+    if (sched_setaffinity(0, sizeof(set), &set) != 0) {
+        fprintf(stderr, "warn: sched_setaffinity(cpu=%d) failed: %s\n", cpu, strerror(errno));
+    }
+}
+
+/* Busy-spin the current (pinned) core for ~ms milliseconds so amd-pstate ramps it to
+ * max frequency BEFORE the first timed query. Runs entirely outside the timed region,
+ * so it cannot perturb the measurement -- it only removes the freq-ramp bias that
+ * otherwise penalises the fastest (best-prefetched) cells most. */
 static void spin_warm_cpu(int ms) {
     if (ms <= 0) {
         return;
@@ -1316,6 +1337,7 @@ int main(int argc, char **argv) {
     char output_path[4096];
 
     parse_args(argc, argv, &opts);
+    pin_to_cpu(opts.cpu);   /* pin before any measurement so spin + op[0] share one core */
     memset(&sqlite_ctx, 0, sizeof(sqlite_ctx));
     record = open_run_record(&opts, record_path, sizeof(record_path));
 

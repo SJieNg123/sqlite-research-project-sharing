@@ -130,7 +130,7 @@ cache 皆空——這在 benchmark 環境每 cell 重現是不可行的。本研
 
 | 層級 | 量測時狀態 | 對照嚴格 cold-start |
 |---|---|---|
-| **OS page cache (DB 內容)** | ✅ 透過 `/usr/local/sbin/drop-caches` setuid wrapper 全機 drop (`sync; echo 3 > /proc/sys/vm/drop_caches`)，並以 `mincore`-based `residency_checker` 驗證 0% resident | 完全空 ✓ |
+| **OS page cache (DB 內容)** | ✅ 透過 `/usr/local/sbin/drop-caches` setuid wrapper 全機 drop (`sync; echo 3 > /proc/sys/vm/drop_caches`)，並以 harness 內建 `--verify-hotset`（`mincore`，emit `verify_cold_pct`）驗證 ≈0% resident | 完全空 ✓ |
 | **磁碟 I/O** | ✅ `majflt > 0` 驗證確實到 disk | 必須 physical I/O ✓ |
 | **SQLite handle / pager** | ⚠️ 預先開好（`PRAGMA cache_size=0`、statement 已 prepare） | 從未 open |
 | **`mmap()` 區域** | ⚠️ 預先建立（mapping 在、page 未 fault） | 從未呼叫 |
