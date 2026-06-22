@@ -72,6 +72,7 @@ WORKLOADS = {
     "A": ROOT / "benchmark_harness/workloads/workload_a_zipfian.txt",
     "B": ROOT / "benchmark_harness/workloads/workload_uniform.txt",
     "C": ROOT / "prefetch_churn/workloads/page_churn_benchmark_high.txt",
+    "Z": ROOT / "benchmark_harness/workloads/workload_zipf_lowkey.txt",  # low-key Zipfian (robustness)
 }
 SLRU_SUFFIX = {"orig": "", "vacuum": "_vacuum", "ta": "_ta"}
 
@@ -85,6 +86,24 @@ STRATEGIES = [
     {"name": "2e_K500",   "kind": "hot2e",  "k": 500},
     {"name": "2f_slru",   "kind": "slru"},
 ]
+
+
+def resolve_strategy(name):
+    """Map a strategy name to its spec. Named entries above win; otherwise parse
+    parameterized forms so N-sweeps / K-sweeps run through the same pipeline:
+      layers_<N>  -> first N interior pages (computed from classify, no precomputed file)
+      2e_K<K>     -> curated interior + top-K leaves (needs hot2e_*_K<K>.csv; regen first)
+    """
+    for s in STRATEGIES:
+        if s["name"] == name:
+            return s
+    m = re.fullmatch(r"layers_(\d+)", name)
+    if m:
+        return {"name": name, "kind": "layers", "n": int(m.group(1))}
+    m = re.fullmatch(r"2e_K(\d+)", name)
+    if m:
+        return {"name": name, "kind": "hot2e", "k": int(m.group(1))}
+    raise ValueError(f"unknown strategy: {name}")
 
 # --------------------------------------------------------------------------- parsing
 RE = {
@@ -185,15 +204,50 @@ def write_deliver_script(workdir, db, hotset, method):
     return path
 
 
-def run_one(db, workload, hotset, method, recdir, use_drop_caches=True):
+def _harness_hardening(args):
+    """Flags every P0 measurement run carries: read-only open, F8 assert, freq ramp, and
+    self-pinning to one core (harness sched_setaffinity, so the warmed core == op[0]'s core
+    without depending on an external taskset wrapper)."""
+    return ["--readonly", "--require-read-first",
+            "--warm-cpu-ms", str(args.warm_cpu_ms), "--cpu", str(args.cpu)]
+
+
+def _mem_prefix(args):
+    """RAM-pressure: run the harness inside a transient user-scope cgroup with a memory cap
+    (systemd-run --user --scope, no root needed). 'none' => unconfined. Used for fig 06."""
+    spec = getattr(args, "mem_limit", "none")
+    if not spec or spec == "none":
+        return []
+    return ["systemd-run", "--user", "--scope", "-q",
+            "-p", f"MemoryMax={spec}", "-p", "MemorySwapMax=0", "--"]
+
+
+def _sys_load():
+    """(loadavg_1m, MemAvailable_kB) captured at call time; '' on failure."""
+    load = mem = ""
+    try:
+        load = open("/proc/loadavg").read().split()[0]
+    except OSError:
+        pass
+    try:
+        for ln in open("/proc/meminfo"):
+            if ln.startswith("MemAvailable"):
+                mem = ln.split()[1]
+                break
+    except OSError:
+        pass
+    return load, mem
+
+
+def run_one(db, workload, hotset, method, recdir, args, use_drop_caches=True):
     """One harness invocation for one arm; returns parsed metrics (or None on failure)."""
     deliver = write_deliver_script(recdir, db, hotset, method)
-    cmd = [str(BH), "--db", str(db), "--workload", str(workload),
+    cmd = _mem_prefix(args) + [str(BH), "--db", str(db), "--workload", str(workload),
            "--output", str(Path(recdir) / "ops.csv"),
            "--record-dir", str(recdir),
            "--cold-advice", "dontneed",
            "--post-cold-script", deliver,
-           "--verify-hotset", str(hotset)]
+           "--verify-hotset", str(hotset)] + _harness_hardening(args)
     if use_drop_caches:
         cmd += ["--drop-caches-script", DROP_CACHES]
     try:
@@ -213,6 +267,32 @@ def run_one(db, workload, hotset, method, recdir, use_drop_caches=True):
             pass
 
 
+def run_baseline(db, workload, recdir, args, verify_hotset=None):
+    """No-prefetch cold first-query = the improvement-% denominator.
+    Drops caches, runs the workload with NO post-cold-script (nothing warmed).
+    preproc=0, e2e=fq. A reference hotset is passed to --verify-hotset so the baseline
+    also emits verify_cold_pct -> the SAME cold gate applies to the denominator (otherwise a
+    warm baseline silently inflates every strategy's improvement-%); delivery_pct then
+    reports what kernel readahead alone delivered."""
+    cmd = _mem_prefix(args) + [str(BH), "--db", str(db), "--workload", str(workload),
+           "--output", str(Path(recdir) / "ops.csv"),
+           "--record-dir", str(recdir),
+           "--cold-advice", "dontneed",
+           "--drop-caches-script", DROP_CACHES] + _harness_hardening(args)
+    if verify_hotset is not None:
+        cmd += ["--verify-hotset", str(verify_hotset)]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        m = parse_metrics(r.stderr + "\n" + r.stdout)
+        if m["first_query_us"] is None:
+            sys.stderr.write(f"  WARN no first_query (baseline):\n{r.stderr[-400:]}\n")
+            return None
+        return m
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        sys.stderr.write(f"  ERROR baseline {e}\n")
+        return None
+
+
 # ------------------------------------------------------------------------ aggregation
 def pctl(data, q):
     """qth percentile (0..100) by linear interpolation; safe for small n."""
@@ -228,13 +308,24 @@ def pctl(data, q):
     return s[lo] + (s[hi] - s[lo]) * frac
 
 
-def aggregate(raw_rows, summary_path):
+def aggregate(raw_rows, summary_path, cold_pct_max=1.0):
+    """Aggregate kept reps per (workload,db,strategy,arm). Rows whose cold check exceeds
+    cold_pct_max are CONTAMINATED (cache wasn't cold) and excluded from the summary (F7/§3.3);
+    they stay in raw_p0.csv. p95 is suppressed when n<4 (meaningless on a tiny sample)."""
     groups = {}
+    dropped = 0
     for row in raw_rows:
         if row["warmup"] == "1":
             continue
+        cp = row.get("cold_pct", "")
+        if cp not in ("", None) and float(cp) > cold_pct_max:
+            dropped += 1
+            continue
         key = (row["workload"], row["db"], row["strategy"], row["arm"])
         groups.setdefault(key, []).append(row)
+    if dropped:
+        sys.stderr.write(f"aggregate: excluded {dropped} contaminated row(s) "
+                         f"(cold_pct>{cold_pct_max}) from summary\n")
     with open(summary_path, "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["workload", "db", "strategy", "arm", "n", "ra_kb",
@@ -249,7 +340,7 @@ def aggregate(raw_rows, summary_path):
             cold = [float(r["cold_pct"]) for r in rows if r["cold_pct"]]
             w.writerow([*key, len(fq), rows[0]["ra_kb"],
                         f"{statistics.median(fq):.2f}" if fq else "",
-                        f"{pctl(fq, 95):.2f}" if fq else "",
+                        f"{pctl(fq, 95):.2f}" if len(fq) >= 4 else "",
                         f"{min(fq):.2f}" if fq else "",
                         f"{statistics.pstdev(fq):.2f}" if len(fq) > 1 else "0",
                         f"{statistics.median(deliv):.1f}" if deliv else "",
@@ -400,7 +491,11 @@ def regen_hotsets(args):
         sys.stderr.write("regen: nothing regenerated.\n")
         return 1
 
-    _write_freeze(results, env_line, args)
+    # also freeze the upstream inputs that deterministically generate the structure-path
+    # (layers_*) hotsets and feed 2e/2d: classify CSVs + workload files (threats audit gap).
+    extra = [resolve_pointer(CLASSIFY[ly]) for ly in layouts]
+    extra += [resolve_pointer(WORKLOADS[w]) for w in wls]
+    _write_freeze(results, env_line, args, extra_files=extra)
 
     print("\n=== regen summary (old -> new resident/marked counts) ===")
     print(f"{'cell':22} {'file':32} {'old':>6} {'new':>6}")
@@ -409,17 +504,20 @@ def regen_hotsets(args):
     return 0
 
 
-def _write_freeze(results, env_line, args):
-    """Write the checksum-freeze manifest over every regenerated hotset (deduped by real path)."""
+def _write_freeze(results, env_line, args, extra_files=None):
+    """Write the checksum-freeze manifest over every regenerated hotset plus the upstream
+    inputs (classify CSVs, workload files) that generate the structure-path hotsets, deduped
+    by real path."""
     FREEZE_PATH.parent.mkdir(parents=True, exist_ok=True)
     files, seen = [], set()
-    for _, _, _, path, _, _ in results:
+    candidates = [path for _, _, _, path, _, _ in results] + list(extra_files or [])
+    for path in candidates:
         real = Path(resolve_pointer(path))
         if str(real) in seen or not real.exists():
             continue
         seen.add(str(real))
         files.append(real)
-    lines = ["# P0 hotset freeze manifest (F7) -- sha256  <path-relative-to-repo-root>",
+    lines = ["# P0 freeze manifest (F7) -- sha256  <path-relative-to-repo-root>",
              f"# {env_line}",
              f"# regen workloads={args.workloads} layouts={args.layouts} K={args.regen_k}"]
     for p in sorted(files):
@@ -429,7 +527,7 @@ def _write_freeze(results, env_line, args):
             rel = p
         lines.append(f"{_sha256(p)}  {rel}")
     FREEZE_PATH.write_text("\n".join(lines) + "\n")
-    sys.stderr.write(f"froze {len(files)} hotsets -> {FREEZE_PATH}\n")
+    sys.stderr.write(f"froze {len(files)} files (hotsets + classify + workloads) -> {FREEZE_PATH}\n")
 
 
 def verify_frozen(args):
@@ -466,10 +564,16 @@ def main():
     ap.add_argument("--workloads", default="A,B,C")
     ap.add_argument("--layouts", default="orig,vacuum,ta")
     ap.add_argument("--strategies", default=",".join(s["name"] for s in STRATEGIES))
-    ap.add_argument("--pread-reps", type=int, default=3)
+    ap.add_argument("--pread-reps", type=int, default=5, help="oracle arm reps (bumped 3->5 so p95 is meaningful)")
     ap.add_argument("--async-reps", type=int, default=10)
+    ap.add_argument("--baseline-reps", type=int, default=10, help="no-prefetch baseline reps per (workload,layout)")
+    ap.add_argument("--no-baseline", action="store_true", help="skip the no-prefetch baseline arm")
     ap.add_argument("--outdir", default=str(ROOT / "p0_runs"))
     ap.add_argument("--ra-kb", type=int, default=128, help="read_ahead_kb to pin via p0_env.sh")
+    ap.add_argument("--cpu", type=int, default=2, help="core the harness pins itself to via sched_setaffinity (-1 = no pin)")
+    ap.add_argument("--warm-cpu-ms", type=int, default=10, help="busy-spin the pinned core this long before op[0]")
+    ap.add_argument("--mem-limit", default="none", help="RAM-pressure: run harness in a systemd --user scope with MemoryMax (e.g. 20M); 'none'=unconfined")
+    ap.add_argument("--cold-pct-max", type=float, default=1.0, help="exclude cells whose cold check exceeds this %% from summary")
     ap.add_argument("--no-pin-env", action="store_true", help="skip p0_env.sh (still records)")
     ap.add_argument("--dry-run", action="store_true", help="print the plan + sample cmd, run nothing")
     ap.add_argument("--list", action="store_true", help="list cells and exit")
@@ -489,14 +593,15 @@ def main():
 
     wls = [x for x in args.workloads.split(",") if x]
     layouts = [x for x in args.layouts.split(",") if x]
-    want = set(args.strategies.split(","))
-    strats = [s for s in STRATEGIES if s["name"] in want]
+    strats = [resolve_strategy(x) for x in args.strategies.split(",") if x]
     cells = [(w, ly, s) for w in wls for ly in layouts for s in strats]
 
     if args.list:
         for w, ly, s in cells:
             print(f"{w:2} {ly:6} {s['name']}")
-        print(f"\n{len(cells)} cells x 2 arms; "
+        nwl = len({(w, ly) for w, ly, _ in cells})
+        base = "" if args.no_baseline else f" + {nwl} baseline cells"
+        print(f"\n{len(cells)} cells x 2 arms (pread/async){base}; "
               f"pread {args.pread_reps} reps, async {args.async_reps} reps (+1 warmup each)")
         return
 
@@ -527,19 +632,39 @@ def main():
 
     # pre-build hotsets per cell (frozen inputs; reused across reps/arms)
     hotsets = {}
+    classify_cache = {}
     for w, ly, s in cells:
-        classify = load_classify(ly)
+        classify = classify_cache.get(ly) or classify_cache.setdefault(ly, load_classify(ly))
         pages = select_pages(s, w, ly, classify)
         if args.dry_run:
             hotsets[(w, ly, s["name"])] = (None, len(pages))
             continue
         dest = workdir / f"hotset_{w}_{ly}_{s['name']}.csv"
         npg = build_hotset(pages, classify, dest)
+        if npg == 0:
+            sys.stderr.write(f"  WARN empty hotset for {w}/{ly}/{s['name']} "
+                             f"-> verify_cold_pct won't emit, cold gate skipped\n")
         hotsets[(w, ly, s["name"])] = (dest, npg)
+
+    # baseline reference hotset per (workload,layout) = ALL db pages, used only for the
+    # baseline's --verify-hotset so the denominator gets the same cold_pct gate as the arms.
+    ref_hotsets = {}
+    if not args.dry_run and not args.no_baseline:
+        for w, ly in dict.fromkeys((w, ly) for w, ly, _ in cells):
+            classify = classify_cache.get(ly) or classify_cache.setdefault(ly, load_classify(ly))
+            ref = workdir / f"refhotset_{ly}.csv"
+            if not ref.exists():
+                build_hotset(set(classify.keys()), classify, ref)
+            ref_hotsets[(w, ly)] = ref
 
     if args.dry_run:
         print(env_line)
-        print(f"\n{len(cells)} cells x 2 arms. plan:")
+        nwl = len({(w, ly) for w, ly, _ in cells})
+        base = "" if args.no_baseline else f" + {nwl} baseline cells"
+        print(f"\n{len(cells)} cells x 2 arms{base}. plan:")
+        if not args.no_baseline:
+            for w, ly in dict.fromkeys((w, ly) for w, ly, _ in cells):
+                print(f"  {w} {ly:6} {'baseline':10} hotset=0 pages   arm=[baseline] (no prefetch)")
         for w, ly, s in cells:
             _, npg = hotsets[(w, ly, s["name"])]
             print(f"  {w} {ly:6} {s['name']:10} hotset={npg} pages  arms=[pread,async]")
@@ -549,23 +674,59 @@ def main():
         print(f"    --cold-advice dontneed --drop-caches-script {DROP_CACHES} \\")
         print(f"    --post-cold-script <tmp: WARM_METHOD=fadvise warmer DB hotset {PAGE_SIZE}> \\")
         print(f"    --verify-hotset <hotset_{w}_{ly}_{s['name']}.csv>")
-        print(f"\nreps: pread {args.pread_reps}+1warmup, async {args.async_reps}+1warmup, rep-major.")
+        base_note = "off" if args.no_baseline else f"{args.baseline_reps}+1warmup per (w,layout)"
+        print(f"\nreps: pread {args.pread_reps}+1warmup, async {args.async_reps}+1warmup, "
+              f"baseline {base_note}, rep-major.")
+        print(f"hardening: pin cpu={args.cpu} (sched_setaffinity), warm-cpu-ms={args.warm_cpu_ms}, "
+              f"readonly+require-read-first, cold-pct-max={args.cold_pct_max}.")
         return
 
     arms = [("pread", args.pread_reps), ("async", args.async_reps)]
-    max_keep = max(args.pread_reps, args.async_reps)
+    # baseline = per (workload,layout), strategy-independent -> dedupe the cell list
+    wl_layouts, seen_wl = [], set()
+    for w, ly, _s in cells:
+        if (w, ly) not in seen_wl:
+            seen_wl.add((w, ly)); wl_layouts.append((w, ly))
+    baseline_keep = 0 if args.no_baseline else args.baseline_reps
+    max_keep = max(args.pread_reps, args.async_reps, baseline_keep)
     raw_rows = []
     raw_path = outdir / "raw_p0.csv"
     cols = ["workload", "db", "strategy", "arm", "ra_kb", "rep", "warmup",
             "cold_pct", "delivery_pct", "first_query_us", "preproc_us",
-            "e2e_us", "avg_us", "majflt", "minflt"]
+            "e2e_us", "avg_us", "majflt", "minflt", "load", "memavail_kb"]
     rawf = open(raw_path, "w", newline="")
     rw = csv.DictWriter(rawf, fieldnames=cols)
     rw.writeheader()
 
+    def emit(m, w, ly, strat, arm, rep, warmup, preproc_override=None):
+        preproc = preproc_override if preproc_override is not None else m["preproc_us"]
+        fq = m["first_query_us"]
+        e2e = (preproc + fq) if (preproc is not None and fq is not None) else None
+        load, mem = _sys_load()
+        row = {"workload": w, "db": ly, "strategy": strat, "arm": arm,
+               "ra_kb": ra_kb, "rep": rep, "warmup": warmup,
+               "cold_pct": _fmt(m["cold_pct"]), "delivery_pct": _fmt(m["delivery_pct"]),
+               "first_query_us": _fmt(fq), "preproc_us": _fmt(preproc),
+               "e2e_us": _fmt(e2e), "avg_us": _fmt(m["avg_us"]),
+               "majflt": _fmt(m["majflt"]), "minflt": _fmt(m["minflt"]),
+               "load": load, "memavail_kb": mem}
+        rw.writerow(row); rawf.flush(); raw_rows.append(row)
+        sys.stderr.write(
+            f"[rep{rep} {'warm' if warmup=='1' else 'keep'}] {w} {ly} "
+            f"{strat} {arm}: fq={fq} delivery={m['delivery_pct']} cold={m['cold_pct']}\n")
+
     # rep-major: outer rep, inner cells -> spreads slow machine drift across cells
     for rep in range(1, 1 + max_keep + 1):   # rep 1 = warmup (dropped in aggregate)
         warmup = "1" if rep == 1 else "0"
+        # baseline (no-prefetch denominator), once per (workload,layout)
+        if not args.no_baseline and rep <= 1 + baseline_keep:
+            for w, ly in wl_layouts:
+                recdir = workdir / f"rec_baseline_{w}_{ly}"
+                recdir.mkdir(exist_ok=True)
+                m = run_baseline(DBS[ly], WORKLOADS[w], recdir, args,
+                                 verify_hotset=ref_hotsets.get((w, ly)))
+                if m is not None:
+                    emit(m, w, ly, "baseline", "baseline", rep, warmup, preproc_override=0.0)
         for w, ly, s in cells:
             hotset, npg = hotsets[(w, ly, s["name"])]
             db, wl = DBS[ly], WORKLOADS[w]
@@ -575,27 +736,13 @@ def main():
                 if rep > 1 + keep:
                     continue
                 method = "pread" if arm == "pread" else "fadvise"
-                m = run_one(db, wl, hotset, method, recdir)
+                m = run_one(db, wl, hotset, method, recdir, args)
                 if m is None:
                     continue
-                preproc = m["preproc_us"]
-                fq = m["first_query_us"]
-                e2e = (preproc + fq) if (preproc is not None and fq is not None) else None
-                row = {"workload": w, "db": ly, "strategy": s["name"], "arm": arm,
-                       "ra_kb": ra_kb, "rep": rep, "warmup": warmup,
-                       "cold_pct": _fmt(m["cold_pct"]), "delivery_pct": _fmt(m["delivery_pct"]),
-                       "first_query_us": _fmt(fq), "preproc_us": _fmt(preproc),
-                       "e2e_us": _fmt(e2e), "avg_us": _fmt(m["avg_us"]),
-                       "majflt": _fmt(m["majflt"]), "minflt": _fmt(m["minflt"])}
-                rw.writerow(row)
-                rawf.flush()
-                raw_rows.append(row)
-                sys.stderr.write(
-                    f"[rep{rep} {'warm' if warmup=='1' else 'keep'}] {w} {ly} "
-                    f"{s['name']} {arm}: fq={fq} delivery={m['delivery_pct']} cold={m['cold_pct']}\n")
+                emit(m, w, ly, s["name"], arm, rep, warmup)
     rawf.close()
 
-    aggregate(raw_rows, outdir / "summary_p0.csv")
+    aggregate(raw_rows, outdir / "summary_p0.csv", cold_pct_max=args.cold_pct_max)
     sys.stderr.write(f"\ndone. raw={raw_path}  summary={outdir/'summary_p0.csv'}\n")
 
 

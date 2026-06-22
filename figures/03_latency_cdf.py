@@ -1,74 +1,64 @@
 """Figure 3: Cumulative latency over the first 50 queries (warmup region).
 
-Story: the cold→warm transition is where prefetch saves you time. After
-~50 queries the page cache is fully warm and every strategy converges
-to ~1.5 µs/query. The figure shows cumulative-time-to-Nth-query so
-the slope = current per-query latency. Baseline has a steep slope for
-the first ~10 queries (cold faults); 2e_K500 and 2f_SLRU keep the
-slope shallow from query 1 because the hot leaves are already mapped.
+Story: the cold→warm transition is where prefetch saves time. The slope = current
+per-query latency; baseline is steep for the first ~10 queries (cold faults), while
+2e_K500 / 2f_SLRU keep the slope shallow from query 1 (hot pages already mapped).
+
+Data (P0): one representative cold run per strategy from the P0 master batch,
+p0_runs/work/rec_{baseline_,}A_orig_<strategy>/ops.csv (async arm, layout=orig).
+Single trace each (the batch keeps the last rep's per-op CSV), so no rep band.
 """
 import csv
 import numpy as np
 from plot_utils import ROOT, save
 import matplotlib.pyplot as plt
 
-DIR = ROOT / "prefetch_access/runs/ops_csv_ram"
+WORK = ROOT / "p0_runs/work"
 ARMS = [
-    ("base",       "baseline (no prefetch)",   "#9ca3af", "-"),
-    ("2d",         "2d (interior-only)",       "#10b981", "-"),
-    ("2e_K500",    "2e_K500 (interior + 500 hot leaves)", "#047857", "-"),
-    ("2f_SLRU",    "2f_SLRU (mincore dump)",   "#f59e0b", "-"),
+    ("baseline", "baseline (no prefetch)",            "#9ca3af"),
+    ("layers_5", "layers_5 (5 interior)",             "#3b82f6"),
+    ("2e_K10",   "2e_K10 (interior + 10 hot leaves)", "#059669"),
+    ("2e_K500",  "2e_K500 (interior + 500 leaves)",   "#064e3b"),
+    ("2f_slru",  "2f_SLRU (mincore dump)",            "#f59e0b"),
 ]
-REPS = 6
 N_WARMUP = 50
 
-def load_first_n(strategy, n):
-    """Return array (REPS, n) of per-query elapsed_us for the first n queries."""
-    runs = []
-    for r in range(1, REPS + 1):
-        p = DIR / f"ops_A_orig_{strategy}_none_r{r}.csv"
-        if not p.exists():
-            continue
-        with p.open() as f:
-            rd = csv.reader(f); next(rd)
-            lat = []
-            for row in rd:
-                lat.append(int(row[5]) / 1000.0)
-                if len(lat) == n: break
-            runs.append(lat)
-    return np.asarray(runs)
+def trace(strategy, n):
+    d = WORK / ("rec_baseline_A_orig" if strategy == "baseline" else f"rec_A_orig_{strategy}")
+    p = d / "ops.csv"
+    if not p.exists():
+        return None
+    lat = []
+    with p.open() as f:
+        rd = csv.reader(f); next(rd)
+        for row in rd:
+            lat.append(int(row[5]) / 1000.0)   # elapsed_ns -> us
+            if len(lat) == n:
+                break
+    return np.asarray(lat)
 
 fig, ax = plt.subplots(figsize=(9, 4.6))
-
 end_vals = []
-for strat, label, color, ls in ARMS:
-    lat = load_first_n(strat, N_WARMUP)
-    if lat.size == 0: continue
-    cum_each = np.cumsum(lat, axis=1)
-    med = np.median(cum_each, axis=0)
-    lo = np.percentile(cum_each, 25, axis=0)
-    hi = np.percentile(cum_each, 75, axis=0)
-    x = np.arange(1, len(med) + 1)
-    ax.plot(x, med, label=label, color=color, lw=1.8, ls=ls)
-    ax.fill_between(x, lo, hi, color=color, alpha=0.12)
-    end_vals.append((med[-1], color))
+for strat, label, color in ARMS:
+    lat = trace(strat, N_WARMUP)
+    if lat is None or lat.size == 0:
+        continue
+    cum = np.cumsum(lat)
+    x = np.arange(1, len(cum) + 1)
+    ax.plot(x, cum, label=label, color=color, lw=1.8)
+    end_vals.append((cum[-1], color))
 
-# Stagger labels vertically so close values don't overlap
+# right-margin cumulative labels, staggered so they don't overlap
 end_vals.sort(key=lambda t: -t[0])
-y_min_sep = 320
-last_y = None
+last_y, y_min_sep = None, (max(v for v, _ in end_vals) * 0.06 if end_vals else 0)
 for v, color in end_vals:
-    y = v
-    if last_y is not None and (last_y - y) < y_min_sep:
-        y = last_y - y_min_sep
-    ax.text(N_WARMUP + 0.6, y, f"{v:.0f} µs",
-            color=color, fontsize=9, va="center", fontweight="bold")
+    y = v if last_y is None or (last_y - v) >= y_min_sep else last_y - y_min_sep
+    ax.text(N_WARMUP + 0.6, y, f"{v:.0f} µs", color=color, fontsize=9, va="center", fontweight="bold")
     last_y = y
 
-ax.set_xlabel("query #")
+ax.set_xlabel("query # (1 = first, cold)")
 ax.set_ylabel("cumulative latency to N-th query (µs)")
-ax.set_title("Cold→warm transition · Workload A · layout 1a · no RAM limit\n"
-             "(shaded = IQR across 6 reps; right-margin labels = cumulative time at query 50)")
+ax.set_title("Cold→warm transition · Workload A · layout orig · P0 (one cold run each)")
 ax.set_xlim(0, N_WARMUP + 7)
 ax.legend(loc="upper left", fontsize=9)
 fig.tight_layout()

@@ -22,19 +22,22 @@
 
 一次 benchmark 大致會做這些事：
 
-1. 讀取 workload 檔案。
-2. 開啟並 mmap SQLite database file。
-3. 讀 SQLite header，取得 page size 與 page count。
-4. 建立唯一的 operations CSV。
-5. 建立唯一的 run record log。
+1. 解析參數;若給 `--cpu` 則 `sched_setaffinity` 釘核。
+2. 讀取 workload 檔案;若給 `--require-read-first` 且 op[0] 非 read 則 abort（F8）。
+3. 開啟並 mmap SQLite database file（`--readonly` 則只讀開檔）。
+4. 讀 SQLite header，取得 page size 與 page count;載入 `--verify-hotset`（若有）。
+5. 建立唯一的 operations CSV 與 run record log。
 6. 依照設定，在 cold advice 前或後開啟 SQLite connection / 初始化 schema。
 7. 記錄 cold advice 前的 SQLite page residency。
-8. 對 database mapping 執行 cold advice。
-9. 若指定 `--drop-caches-script`，呼叫 root helper 執行 `sync` 與 `/proc/sys/vm/drop_caches`。
-10. 記錄 cold advice / drop-caches 後的 SQLite page residency。
-11. 逐筆執行 workload operation，記錄 latency 與 fault delta。
-12. 輸出整體 benchmark summary。
-13. 記錄 benchmark 結束後的 SQLite page residency。
+8. 對 database mapping 執行 cold advice（MADV chain）。
+9. 若指定 `--drop-caches-script`，呼叫 setuid helper 執行 `sync` 與 `/proc/sys/vm/drop_caches`。
+10. **`--verify-hotset` ① cold 檢查**：一道 mincore → `verify_cold_pct`（應 ≈0）。
+11. 若指定 `--post-cold-script`，執行 prefetch 交付（P0 用 `warmer`）。
+12. 記錄 drop-caches/prefetch 後的 SQLite page residency。
+13. **`--verify-hotset` ② delivery 檢查**：首查前一道 mincore → `verify_delivery_pct`。
+14. 若 `--warm-cpu-ms>0`，busy-spin 釘定核心升頻（計時區外）。
+15. 逐筆執行 workload operation，記錄 latency 與 fault delta（`first_query_latency_us` = op[0]）。
+16. 輸出整體 benchmark summary;記錄結束後的 page residency。
 
 ## 輸入
 
@@ -65,7 +68,12 @@
 | `--mmap-size` | database file size | SQLite `PRAGMA mmap_size` 目標值 |
 | `--drop-caches-script` | 無 | 可選的 root helper，用來真正 drop Linux page cache |
 | `--drop-caches-use-sudo` | off | 用 `sudo -n` 執行 `--drop-caches-script`，讓 harness 本身維持非 root |
-| `--post-cold-script` | 無 | 可選 helper，在 cold/drop-caches 後、query 前執行 |
+| `--post-cold-script` | 無 | 可選 helper，在 cold/drop-caches 後、query 前執行（P0 用它 exec `warmer`）|
+| `--verify-hotset` | 無 | hotset CSV（`page_number,is_resident\|file_offset`）。drop 後 emit `verify_cold_pct`（應 ≈0）、prefetch 後首查前 emit `verify_delivery_pct`。兩道 µs 級 mincore，取代外部 `residency_checker`（漏洞 2）|
+| `--readonly` | off | 以 `SQLITE_OPEN_READONLY` 開檔（只讀 TTFQ 量測更乾淨、不取寫鎖）|
+| `--require-read-first` | off | workload op[0] 不是 read 就 abort（F8：first-query 才是乾淨 TTFQ）|
+| `--warm-cpu-ms` | `0` | 計時前 busy-spin 釘定核心這麼久，把 amd-pstate 升到滿頻才量首查（消 freq-ramp 偏差）|
+| `--cpu` | `-1` | 用 `sched_setaffinity` 把 process 釘到此核（-1=不釘）；配合 `--warm-cpu-ms` 確保升頻核心就是跑 op[0] 的核心 |
 | `--cold-advice` | `dontneed` | cold advice 模式 |
 | `--sqlite-open-timing` | `before-cold` | SQLite connection 開啟時機 |
 | `--schema-init-timing` | `before-cold` | schema / prepared statements 初始化時機 |

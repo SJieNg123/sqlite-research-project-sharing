@@ -155,3 +155,21 @@ prefetch_warmer/runs/ablation_driver.log
 __pycache__/
 # trav_bench compiled binary (L3/L4 VFS bench; rebuild from trav_bench.c)
 prefetch_warmer/src/trav_bench
+
+# --- P0 master batch (run_p0.py): keep raw_p0.csv / summary_p0.csv / env.txt /
+#     hotset_freeze.sha256; ignore the bulky per-cell intermediates (~3 GB) ---
+p0_runs/work/
+p0_runs/regen_work/
+# P1 hotset backups from --regen-hotsets (old versions live in git history)
+*.p1.bak
+
+# --- P0 sweep batches (N-sweep / K-sweep): keep CSVs, ignore intermediates ---
+p0_runs_nsweep/work/
+p0_runs_nsweep/regen_work/
+p0_runs_ksweep/work/
+p0_runs_ksweep/regen_work/
+p0_runs*_matrix.log
+
+# all P0 sweep outdirs: keep CSVs, ignore intermediates
+p0_runs*/work/
+p0_runs*/regen_work/

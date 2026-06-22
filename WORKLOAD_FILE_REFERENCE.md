@@ -13,14 +13,16 @@
 > 偏離者請在 PR 描述明示理由。設計依據與歷史 pipeline 對照見
 > [IMPLEMENTATION_PIPELINES.md](IMPLEMENTATION_PIPELINES.md)。
 
-### P0 = 四個強制層級
+### P0 = 四個強制層級（2026-06-22 嚴謹化）
 
 | 層 | 機制 | 目的 |
 |---|---|---|
 | ① harness MADV chain | `--cold-advice dontneed`（= `MADV_COLD → MADV_PAGEOUT → MADV_DONTNEED`）| 對自家 mmap 區域強制 kernel 回收 |
 | ② 全機 drop_caches | `--drop-caches-script /usr/local/sbin/drop-caches` | 全機 page cache + dentries + inodes 一律清空（setuid wrapper、u03 可跑、不需 sudo）|
-| ③ Prefetch hint | `--post-cold-script <strategy_prefetch.sh>` | 策略本身的 prefetch（這是「策略」差異所在）|
-| ④ Residency verify | 跑完後 `residency_checker --threshold 0` | 強制驗證 cache 真的清空了；不為 0 abort 該 cell |
+| ③ Prefetch 交付 | `--post-cold-script <deliver.sh>` 走統一引擎 **`warmer`**（`WARM_METHOD=pread`/`fadvise`）；hotset 由離線策略產生並凍結 | 策略只決定「載哪些頁」，交付方式固定 → pread/async 只差 sync/async |
+| ④ Residency verify | **harness 內建 `--verify-hotset`**：drop 後一道 mincore（`verify_cold_pct`，應 ≈0）+ prefetch 後、首查前一道 mincore（`verify_delivery_pct`）| 兩道 µs 級 mincore，不用外部 `residency_checker`（其 ~100ms 間隔會污染 `fq_async`）；`cold_pct>1%` 的 cell 由彙整剔除 |
+
+**雙臂 + baseline + 環境**（`run_p0.py` 一次跑齊）：每 cell 對**同一 hotset** 跑 **pread(oracle) / async(hint) 雙臂**;每 (workload,layout) 另跑一個 **baseline(無 prefetch) cell** 當 improvement-% 分母(同樣經 `verify_cold_pct` 閘門)。reps:pread 5 / async 10 / baseline 10(各丟第 1 rep warmup)、rep-major。harness 另以 `--cpu`(sched_setaffinity)+ `--warm-cpu-ms` 把量測核心釘住並升頻、`--readonly` 開檔、`--require-read-first` 強制 op[0]=read(F8)。`read_ahead_kb` 固定 128。hotset/classify/workload 全 checksum 凍結(`run_p0.py --regen-hotsets` 重產 + `--verify-frozen` 把關)。
 
 ### 為什麼必須 P0
 
@@ -172,7 +174,8 @@ D **不需要 hotpages**——它只負責寫入製造 churn，不會被 cold-st
 
 ## 3. 一格 benchmark 的精確 command（**P0 pipeline 版本**）
 
-無論哪種策略，都長這樣（只差 `--post-cold-script` 換哪支 prefetch script）：
+實務上**整個矩陣由 [`run_p0.py`](run_p0.py) 跑**（雙臂 + baseline + 凍結 + 彙整一次到位）。
+單格底層 command 長這樣（P0 ④ 的驗證已**內建進 harness**，不再有外部步驟）：
 
 ```sh
 benchmark_harness/benchmark_harness \
@@ -181,19 +184,20 @@ benchmark_harness/benchmark_harness \
   --output    <ops CSV 輸出路徑> \
   --record-dir <log 目錄> \
   --cold-advice dontneed \                                # P0 ①
-  --drop-caches-script /usr/local/sbin/drop-caches \      # P0 ②（**取代 cold_*.sh**）
-  --post-cold-script   <某支 prefetch script>             # P0 ③
-
-# 跑完後（P0 ④）：
-residency_checker --db <db> --threshold 0 || exit 1       # 不為 0 abort cell
+  --drop-caches-script /usr/local/sbin/drop-caches \      # P0 ②
+  --post-cold-script   <deliver.sh: WARM_METHOD=pread|fadvise warmer db hotset 4096> \  # P0 ③（統一 warmer 引擎）
+  --verify-hotset      <hotset.csv> \                     # P0 ④（內建 cold_pct + delivery_pct，無外部 residency_checker）
+  --readonly --require-read-first \                       # 只讀開檔 + F8（op[0]=read）
+  --cpu 2 --warm-cpu-ms 10                                # 釘核 + 升頻後才量首查
+# baseline cell：同上但去掉 --post-cold-script（不 prefetch），保留 --verify-hotset 量 cold_pct
 ```
 
-> 也可繼續傳 `--drop-caches-script layout_rewriter/runs/cold_orig.sh`——這些
-> `cold_*.sh` 內部已經改成 `exec /usr/local/sbin/drop-caches`，跑出來效果
-> 一致。但建議**直接傳 wrapper 路徑**，少一層 indirection。
+> `cold_*.sh` 內部已改成 `exec /usr/local/sbin/drop-caches`，可直接傳 wrapper 路徑。
+> 早期「跑完後 `residency_checker --threshold 0` abort」那步**已由 harness 內建
+> `--verify-hotset` 取代**（外部 checker 的 ~100ms 間隔會讓 async readahead 多載、污染 `fq_async`）。
 
-`--post-cold-script` 是「換策略」的開關。每支 prefetch script 就是 `exec`
-對應的 prefetch tool 帶不同參數。**所有簽章與 §1.4 一致**：
+`--post-cold-script` 過去是「換策略」的開關（直接 exec 對應 native prefetch tool）；
+P0 下**統一改走 `warmer`**，native tool 降為離線 hotset 產生器。歷史簽章（仍可離線用）：
 
 | 策略 | post-cold-script 內容 | Tool |
 |---|---|---|

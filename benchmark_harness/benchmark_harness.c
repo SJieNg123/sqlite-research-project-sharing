@@ -19,6 +19,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <sched.h>
 #include <stdarg.h>
 #include <sqlite3.h>
 #include <stdbool.h>
@@ -83,6 +84,10 @@ typedef struct {
     sqlite_open_timing_t sqlite_open_timing;
     schema_init_timing_t schema_init_timing;
     bool debug;
+    bool readonly;           /* open DB read-only (clean for read-only TTFQ measurement) */
+    bool require_read_first; /* F8: abort if workload op[0] is not a read */
+    int  warm_cpu_ms;        /* busy-spin the measuring core this long before op[0] (freq ramp) */
+    int  cpu;                /* pin process to this core via sched_setaffinity (-1 = no pin) */
 } options_t;
 
 typedef struct {
@@ -147,6 +152,10 @@ static void usage(const char *prog) {
             "  --cold-advice dontneed          Use MADV_COLD, MADV_PAGEOUT, then MADV_DONTNEED (default).\n"
             "  --sqlite-open-timing before-cold|after-cold    Default: before-cold.\n"
             "  --schema-init-timing before-cold|after-cold    Default: before-cold.\n"
+            "  --readonly                      Open DB read-only (clean for read-only TTFQ measurement).\n"
+            "  --require-read-first            Abort if workload op[0] is not a read (F8).\n"
+            "  --warm-cpu-ms <ms>              Busy-spin the pinned core this long before op[0] (freq ramp; default 0).\n"
+            "  --cpu <n>                       Pin process to core n via sched_setaffinity (default -1 = no pin).\n"
             "  --debug                         Print sync, madvise, drop-caches, and SQLite timing diagnostics.\n",
             prog);
 }
@@ -186,6 +195,7 @@ static void parse_args(int argc, char **argv, options_t *opts) {
     opts->cold_advice = COLD_ADVICE_DONTNEED;
     opts->sqlite_open_timing = SQLITE_OPEN_BEFORE_COLD;
     opts->schema_init_timing = SCHEMA_INIT_BEFORE_COLD;
+    opts->cpu = -1;
 
     for (int i = 1; i < argc; ++i) {
         const char *arg = argv[i];
@@ -239,6 +249,14 @@ static void parse_args(int argc, char **argv, options_t *opts) {
                 fprintf(stderr, "error: unknown --schema-init-timing mode: %s\n", mode);
                 exit(1);
             }
+        } else if (strcmp(arg, "--readonly") == 0) {
+            opts->readonly = true;
+        } else if (strcmp(arg, "--require-read-first") == 0) {
+            opts->require_read_first = true;
+        } else if (strcmp(arg, "--warm-cpu-ms") == 0 && i + 1 < argc) {
+            opts->warm_cpu_ms = (int)parse_i64(argv[++i], "--warm-cpu-ms");
+        } else if (strcmp(arg, "--cpu") == 0 && i + 1 < argc) {
+            opts->cpu = (int)parse_i64(argv[++i], "--cpu");
         } else if (strcmp(arg, "--debug") == 0) {
             opts->debug = true;
         } else {
@@ -1037,8 +1055,9 @@ static void sqlite_open_if_needed(sqlite_ctx_t *ctx, const options_t *opts) {
         return;
     }
 
-    int rc = sqlite3_open_v2(opts->db_path, &ctx->db,
-                             SQLITE_OPEN_READWRITE | SQLITE_OPEN_NOMUTEX, NULL);
+    int open_flags = (opts->readonly ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE)
+                     | SQLITE_OPEN_NOMUTEX;
+    int rc = sqlite3_open_v2(opts->db_path, &ctx->db, open_flags, NULL);
     if (rc != SQLITE_OK) {
         die_sqlite(ctx->db, "sqlite3_open_v2", rc);
     }
@@ -1166,6 +1185,46 @@ static void run_select_stmt(sqlite_ctx_t *ctx, sqlite3_stmt *stmt,
     }
 }
 
+/* Pin the process to one core so the freq-warmed core IS the core that runs op[0].
+ * Self-pinning (vs an external taskset wrapper) means the guarantee can't be silently
+ * lost if the wrapper is missing. No-op for cpu < 0. */
+static void pin_to_cpu(int cpu) {
+    if (cpu < 0) {
+        return;
+    }
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    CPU_SET(cpu, &set);
+    if (sched_setaffinity(0, sizeof(set), &set) != 0) {
+        fprintf(stderr, "warn: sched_setaffinity(cpu=%d) failed: %s\n", cpu, strerror(errno));
+    }
+}
+
+/* Busy-spin the current (pinned) core for ~ms milliseconds so amd-pstate ramps it to
+ * max frequency BEFORE the first timed query. Runs entirely outside the timed region,
+ * so it cannot perturb the measurement -- it only removes the freq-ramp bias that
+ * otherwise penalises the fastest (best-prefetched) cells most. */
+static void spin_warm_cpu(int ms) {
+    if (ms <= 0) {
+        return;
+    }
+    struct timespec start, now;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    volatile uint64_t acc = 0;
+    for (;;) {
+        for (int k = 0; k < 100000; ++k) {
+            acc += (uint64_t)k * 2654435761u;
+        }
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        long long elapsed_ms = (now.tv_sec - start.tv_sec) * 1000LL +
+                               (now.tv_nsec - start.tv_nsec) / 1000000LL;
+        if (elapsed_ms >= ms) {
+            break;
+        }
+    }
+    (void)acc;
+}
+
 static benchmark_summary_t run_benchmark(sqlite_ctx_t *ctx,
                                          const workload_t *workload,
                                          FILE *out) {
@@ -1278,10 +1337,22 @@ int main(int argc, char **argv) {
     char output_path[4096];
 
     parse_args(argc, argv, &opts);
+    pin_to_cpu(opts.cpu);   /* pin before any measurement so spin + op[0] share one core */
     memset(&sqlite_ctx, 0, sizeof(sqlite_ctx));
     record = open_run_record(&opts, record_path, sizeof(record_path));
 
     workload = load_workload(opts.workload_path);
+    /* F8: first_query_latency_us is only a clean TTFQ if op[0] is a read. */
+    if (workload.count > 0 && workload.ops[0].type != OP_READ) {
+        fprintf(stderr,
+                "%s: workload op[0] is '%s', not 'read' -- first_query_latency_us is NOT a "
+                "clean TTFQ (F8 violated)\n",
+                opts.require_read_first ? "error" : "warning",
+                op_type_name(workload.ops[0].type));
+        if (opts.require_read_first) {
+            exit(1);
+        }
+    }
     dbmap = map_db_file(opts.db_path);
     if (opts.mmap_size == 0) {
         opts.mmap_size = (int64_t)dbmap.file_size;
@@ -1384,6 +1455,8 @@ int main(int argc, char **argv) {
     /* (2) delivery check: hotset residency immediately before the first query
      * (~us mincore, so async readahead gets no meaningful extra time to land). */
     verify_hotset_residency(&dbmap, hotset_pages, hotset_n, "delivery", record);
+
+    spin_warm_cpu(opts.warm_cpu_ms);   /* ramp the pinned core to max freq before op[0] */
 
     write_csv_header(out);
     summary = run_benchmark(&sqlite_ctx, &workload, out);

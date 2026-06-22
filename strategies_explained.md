@@ -4,6 +4,14 @@
 > overall_strategies.md 講「每個策略是什麼」、[overall_results.md](overall_results.md) 講「結果數字」；
 > 本檔講「**每個策略到底是怎麼被測出來的**」——從清空快取、插入 prefetch、到量第一筆延遲。
 
+> **⚠️ 2026-06-22：本檔描述的是 P1 era 的測試引擎（`evict`/`posix_fadvise` 冷清、native prefetch tool 直接交付）。
+> Master rerun 改用 [P0 pipeline](IMPLEMENTATION_PIPELINES.md)（[`run_p0.py`](run_p0.py)），差異為:
+> ① 冷清一律全機 `/usr/local/sbin/drop-caches`（setuid、免 sudo）取代 `posix_fadvise`;
+> ② 殘留驗證走 harness 內建 `--verify-hotset`（`cold_pct`/`delivery_pct`）取代外部 `residency_checker`;
+> ③ 交付統一走 `warmer`（pread oracle / async hint 雙臂），native tool 降為離線 hotset 產生器;
+> ④ 每 (workload,layout) 加 no-prefetch **baseline** 當分母;`cold_pct>1%` 剔除、op[0]=read 強制、釘核升頻、ra=128。
+> 下面的步驟敘述保留作 P1 歷史對照。**正式重跑請以 P0 為準。**
+
 ---
 
 ## 總綱：七個策略共用同一套引擎

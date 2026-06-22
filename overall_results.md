@@ -42,11 +42,14 @@
 > （end-to-end stacked，2f SLRU bar 高過 baseline 紅線、真實 cold start 反而慢
 > 2-6 倍）。
 >
-> 🆕 **2026-06-19 P0 Pipeline 統一**：所有 sub-project 的 cold-start
+> 🆕 **2026-06-19 P0 Pipeline 統一**（措辭 2026-06-22 校正）：所有 sub-project 的 cold-start
 > 機制已統一到 P0 pipeline（harness MADV chain + `/usr/local/sbin/drop-caches`
-> setuid wrapper + residency_checker verify 0%），詳見
-> [IMPLEMENTATION_PIPELINES.md](IMPLEMENTATION_PIPELINES.md)。**但**：
-> **本檔以下所有 dimension 的數字皆收集於 P0 之前**，混用 4 條歷史 pipeline：
+> setuid wrapper + **harness 內建 `--verify-hotset`** 兩道 mincore 量 `cold_pct`/`delivery_pct`；
+> 注意**不是**外部 `residency_checker`——後者的 ~100ms 間隔會污染 `fq_async`），詳見
+> [IMPLEMENTATION_PIPELINES.md](IMPLEMENTATION_PIPELINES.md)。歷史派 hotset（2d/2e/2f）由
+> `run_p0.py --regen-hotsets` 以 P0 全機 drop-caches 重產並 checksum 凍結。**但**：
+> **本檔以下所有 dimension 的數字皆收集於 P0 之前**，混用 4 條歷史 pipeline，
+> 待 P0 master rerun 取代（屆時每個 % 需從新 `summary_p0.csv` 重算）：
 >
 > | Pipeline | 機制 | 用在哪些 dimension |
 > |---|---|---|
@@ -85,6 +88,96 @@
 >
 > 每節最下方標明該 dimension 的資料來源 pipeline。論文最終版前，這 16 條
 > 矛盾 + RAM-pressure 校正都需要 master rerun under P0 才能 close。
+
+---
+
+<!-- P0-MASTER-RESULTS-START -->
+## P0 master batch 結果（2026-06-22,authoritative）
+
+> 由 `run_p0.py` 一次跑齊:54 strategy cells × pread/async + 9 baseline,pread 5 / async 10 / baseline 10 reps(丟 warmup)、rep-major、全機 drop-caches、in-harness `--verify-hotset`、釘核升頻、ra=128。**全 117 cell `cold_pct`=0**。原始檔:[`p0_runs/summary_p0.csv`](p0_runs/summary_p0.csv) / [`p0_runs/raw_p0.csv`](p0_runs/raw_p0.csv)。
+> `fq` = first-query median µs;`impr%` = async 相對該 (workload,layout) baseline;`e2e` = preproc+fq(async);`deliv%` = async delivery_pct;`oracle` = pread 臂 fq(可達上界)。
+> **以下歷史維度表(主表～第十八維)為 pre-P0,保留作對照,數字以本節為準。**
+
+### Workload A (Zipfian)
+
+| layout | strategy | fq_async | impr% | deliv% | e2e_async | oracle(pread) |
+|---|---|--:|--:|--:|--:|--:|
+| **orig** | baseline | **496.86** | — | — | 496.86 | — |
+| orig | layers_5 | 349.61 | 30% | 100.0 | 606.89 | 153.69 |
+| orig | layers_92 | 337.77 | 32% | 100.0 | 724.67 | 155.06 |
+| orig | 2d | 335.01 | 33% | 100.0 | 609.67 | 154.34 |
+| orig | 2e_K10 | 337.32 | 32% | 100.0 | 626.31 | 152.25 |
+| orig | 2e_K500 | 154.23 | 69% | 100.0 | 1224.72 | 158.36 |
+| orig | 2f_slru | 106.76 | 79% | 100.0 | 7489.41 | 106.58 |
+| **vacuum** | baseline | **696.87** | — | — | 696.87 | — |
+| vacuum | layers_5 | 554.39 | 20% | 100.0 | 809.36 | 184.94 |
+| vacuum | layers_92 | 558.94 | 20% | 100.0 | 936.62 | 194.18 |
+| vacuum | 2d | 555.44 | 20% | 100.0 | 823.73 | 186.86 |
+| vacuum | 2e_K10 | 553.36 | 21% | 100.0 | 842.25 | 185.79 |
+| vacuum | 2e_K500 | 190.28 | 73% | 26.2 | 1170.64 | 198.11 |
+| vacuum | 2f_slru | 104.50 | 85% | 100.0 | 5873.91 | 104.03 |
+| **ta** | baseline | **651.69** | — | — | 651.69 | — |
+| ta | layers_5 | 496.99 | 24% | 100.0 | 792.35 | 489.00 |
+| ta | layers_92 | 426.06 | 35% | 100.0 | 835.59 | 186.52 |
+| ta | 2d | 437.49 | 33% | 72.1 | 778.83 | 200.16 |
+| ta | 2e_K10 | 394.17 | 40% | 100.0 | 751.58 | 196.52 |
+| ta | 2e_K500 | 206.21 | 68% | 27.2 | 1290.30 | 192.38 |
+| ta | 2f_slru | 104.75 | 84% | 100.0 | 7542.85 | 109.03 |
+
+### Workload B (Uniform)
+
+| layout | strategy | fq_async | impr% | deliv% | e2e_async | oracle(pread) |
+|---|---|--:|--:|--:|--:|--:|
+| **orig** | baseline | **725.31** | — | — | 725.31 | — |
+| orig | layers_5 | 383.90 | 47% | 100.0 | 680.18 | 385.44 |
+| orig | layers_92 | 389.86 | 46% | 100.0 | 830.32 | 388.64 |
+| orig | 2d | 384.57 | 47% | 100.0 | 697.56 | 386.66 |
+| orig | 2e_K10 | 382.24 | 47% | 100.0 | 712.07 | 390.17 |
+| orig | 2e_K500 | 429.59 | 41% | 100.0 | 1563.15 | 412.38 |
+| orig | 2f_slru | 105.30 | 85% | 100.0 | 7572.22 | 105.53 |
+| **vacuum** | baseline | **998.90** | — | — | 998.90 | — |
+| vacuum | layers_5 | 508.52 | 49% | 100.0 | 775.29 | 511.11 |
+| vacuum | layers_92 | 515.72 | 48% | 100.0 | 901.80 | 520.60 |
+| vacuum | 2d | 507.51 | 49% | 100.0 | 782.36 | 511.01 |
+| vacuum | 2e_K10 | 512.71 | 49% | 100.0 | 798.92 | 513.80 |
+| vacuum | 2e_K500 | 401.65 | 60% | 23.6 | 1421.45 | 472.48 |
+| vacuum | 2f_slru | 106.00 | 89% | 100.0 | 5837.06 | 106.39 |
+| **ta** | baseline | **795.23** | — | — | 795.23 | — |
+| ta | layers_5 | 602.37 | 24% | 100.0 | 898.01 | 590.90 |
+| ta | layers_92 | 577.76 | 27% | 77.2 | 986.96 | 595.77 |
+| ta | 2d | 587.07 | 26% | 77.5 | 932.89 | 568.39 |
+| ta | 2e_K10 | 594.48 | 25% | 80.0 | 942.14 | 600.76 |
+| ta | 2e_K500 | 625.36 | 21% | 26.9 | 1638.70 | 525.66 |
+| ta | 2f_slru | 107.00 | 87% | 100.0 | 7539.90 | 107.13 |
+
+### Workload C (Churn-heavy)
+
+| layout | strategy | fq_async | impr% | deliv% | e2e_async | oracle(pread) |
+|---|---|--:|--:|--:|--:|--:|
+| **orig** | baseline | **1058.09** | — | — | 1058.09 | — |
+| orig | layers_5 | 1020.82 | 4% | 100.0 | 1322.25 | 1017.30 |
+| orig | layers_92 | 635.96 | 40% | 100.0 | 1068.00 | 635.09 |
+| orig | 2d | 635.31 | 40% | 100.0 | 930.10 | 631.70 |
+| orig | 2e_K10 | 154.84 | 85% | 100.0 | 462.20 | 152.79 |
+| orig | 2e_K500 | 154.31 | 85% | 67.3 | 863.73 | 154.48 |
+| orig | 2f_slru | 102.38 | 90% | 100.0 | 1178.72 | 101.58 |
+| **vacuum** | baseline | **991.75** | — | — | 991.75 | — |
+| vacuum | layers_5 | 866.45 | 13% | 100.0 | 1158.29 | 884.18 |
+| vacuum | layers_92 | 503.96 | 49% | 100.0 | 911.32 | 501.58 |
+| vacuum | 2d | 495.35 | 50% | 100.0 | 771.89 | 496.86 |
+| vacuum | 2e_K10 | 185.41 | 81% | 100.0 | 499.68 | 188.26 |
+| vacuum | 2e_K500 | 188.28 | 81% | 55.6 | 936.92 | 187.47 |
+| vacuum | 2f_slru | 101.50 | 90% | 100.0 | 954.27 | 102.80 |
+| **ta** | baseline | **870.95** | — | — | 870.95 | — |
+| ta | layers_5 | 839.69 | 4% | 100.0 | 1140.96 | 835.32 |
+| ta | layers_92 | 473.04 | 46% | 100.0 | 874.45 | 487.30 |
+| ta | 2d | 483.16 | 45% | 64.6 | 826.00 | 454.24 |
+| ta | 2e_K10 | 188.38 | 78% | 100.0 | 548.46 | 189.76 |
+| ta | 2e_K500 | 189.36 | 78% | 100.0 | 1067.60 | 189.54 |
+| ta | 2f_slru | 103.61 | 88% | 100.0 | 1205.34 | 99.69 |
+
+**讀法**:① first-query 最低一律是 **2f_slru**(載整個 working set),但它 `e2e` 被 ~5.7–7.5ms preproc 拖垮 → 真要部署看 e2e 時 2f 出局。② 結構派 **layers_5 / 2e_K10** 用極少 syscall 拿到中段效益、`e2e` 最划算(尤其 **C × 2e_K10:fq −85%、e2e 僅 462µs**)。③ `deliv%`<100 的格(多為 ta/vacuum × 2e_K500)是 async fadvise 未及載滿整個 hotset、但首查所需頁多已命中。④ `oracle` 欄是同步 pread 的可達下界。
+<!-- P0-MASTER-RESULTS-END -->
 
 ---
 
