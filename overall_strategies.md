@@ -174,12 +174,12 @@ workload/layout 而定(見下)。
 
 **P0 N-sweep（async first-query;權威全表見 [overall_results.md「layers_N sweep」](overall_results.md)）。** layers_N = 按 file offset 取前 N 個 interior page。
 
-Workload A、layout orig（vs baseline 497 µs）:
+Workload A、layout orig（vs baseline 505 µs;[`p0_runs_nsweep_dense/`](p0_runs_nsweep_dense/summary_p0.csv)）:
 
-| N | 1 | 5 | 13 | 34 | 92 |
+| N | 1 | 5 | 16 | 46 | 92 |
 |---:|--:|--:|--:|--:|--:|
-| first-q µs | 676 | 336 | 349 | 335 | 337 |
-| 改善 | **+36%(更慢)** | **−32%** | −30% | −33% | −32% |
+| first-q µs | 663 | 333 | 331 | 327 | 333 |
+| 改善 | **+31%(更慢)** | **−34%** | −34% | −35% | −34% |
 
 P0 重點(取代舊「N=5 −54% 甜蜜點」):
 - **N=1 普遍比 baseline 慢**(A/Z orig ~+36%):只下一頁的 warmer/madvise 開銷 > coverage 受益。
