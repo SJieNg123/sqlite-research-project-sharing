@@ -47,6 +47,16 @@ int main(int argc, char *argv[]) {
 
     long long t0 = now_ns();
     int warmed = 0;
+    /* Split the preprocessing wall-clock into two terms so e2e can be reported under
+     * both deployment models:
+     *   open_us    = cold open(db)+fopen(hotset)+malloc setup. A warm / in-app process
+     *                does NOT re-pay this (its DB handle is already open) -> exclude it
+     *                for the "warm process, cold data" model.
+     *   deliver_us = page-list iterate + per-page pread/fadvise loop = what an integrated
+     *                prefetch actually costs (~ static prefetch_elapsed).
+     *   warmer_us  = open_us + deliver_us = the standalone-warmer total (unchanged).
+     * Measurement semantics are unchanged; we only add two timestamps + two stderr fields. */
+    long long t_open_done = t0;
 
     if (do_warm) {
         int fd = open(db, O_RDONLY);
@@ -57,6 +67,8 @@ int main(int argc, char *argv[]) {
         /* read-and-discard scratch (F4: not a data cache) */
         unsigned char *scratch = malloc(page_size);
         if (!scratch) { fclose(f); close(fd); return 1; }
+
+        t_open_done = now_ns();                            /* end of open/setup term */
 
         char line[256];
         int header = 1;
@@ -76,8 +88,8 @@ int main(int argc, char *argv[]) {
     }
 
     long long t1 = now_ns();
-    fprintf(stderr, "warmer_us=%.2f warmed_pages=%d method=%s mode=%s\n",
-            (t1 - t0) / 1000.0, warmed,
+    fprintf(stderr, "warmer_us=%.2f open_us=%.2f deliver_us=%.2f warmed_pages=%d method=%s mode=%s\n",
+            (t1 - t0) / 1000.0, (t_open_done - t0) / 1000.0, (t1 - t_open_done) / 1000.0, warmed,
             use_pread ? "pread" : "fadvise",
             do_warm ? "warm" : "off");
     return 0;

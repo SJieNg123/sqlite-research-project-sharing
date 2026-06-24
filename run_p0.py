@@ -114,6 +114,8 @@ RE = {
     "cold_pct":       re.compile(r"verify_cold_pct=([\d.]+)"),
     "delivery_pct":   re.compile(r"verify_delivery_pct=([\d.]+)"),
     "preproc_us":     re.compile(r"warmer_us=([\d.]+)"),
+    "open_us":        re.compile(r"open_us=([\d.]+)"),       # cold open+setup (excluded in warm-process model)
+    "deliver_us":     re.compile(r"deliver_us=([\d.]+)"),    # iterate+prefetch syscalls (~static prefetch_elapsed)
 }
 
 
@@ -331,12 +333,14 @@ def aggregate(raw_rows, summary_path, cold_pct_max=1.0):
         w.writerow(["workload", "db", "strategy", "arm", "n", "ra_kb",
                     "fq_median", "fq_p95", "fq_min", "fq_stdev",
                     "delivery_pct_median", "preproc_us_median",
-                    "e2e_median", "cold_pct_max"])
+                    "open_us_median", "deliver_us_median",
+                    "e2e_median", "e2e_warm_median", "cold_pct_max"])
+        def _med(rows, col):
+            v = [float(r[col]) for r in rows if r.get(col)]
+            return f"{statistics.median(v):.2f}" if v else ""
         for key, rows in sorted(groups.items()):
             fq = [float(r["first_query_us"]) for r in rows if r["first_query_us"]]
-            e2e = [float(r["e2e_us"]) for r in rows if r["e2e_us"]]
             deliv = [float(r["delivery_pct"]) for r in rows if r["delivery_pct"]]
-            pre = [float(r["preproc_us"]) for r in rows if r["preproc_us"]]
             cold = [float(r["cold_pct"]) for r in rows if r["cold_pct"]]
             w.writerow([*key, len(fq), rows[0]["ra_kb"],
                         f"{statistics.median(fq):.2f}" if fq else "",
@@ -344,8 +348,9 @@ def aggregate(raw_rows, summary_path, cold_pct_max=1.0):
                         f"{min(fq):.2f}" if fq else "",
                         f"{statistics.pstdev(fq):.2f}" if len(fq) > 1 else "0",
                         f"{statistics.median(deliv):.1f}" if deliv else "",
-                        f"{statistics.median(pre):.2f}" if pre else "",
-                        f"{statistics.median(e2e):.2f}" if e2e else "",
+                        _med(rows, "preproc_us"),
+                        _med(rows, "open_us"), _med(rows, "deliver_us"),
+                        _med(rows, "e2e_us"), _med(rows, "e2e_warm_us"),
                         f"{max(cold):.1f}" if cold else ""])
 
 
@@ -699,7 +704,8 @@ def main():
     raw_path = outdir / "raw_p0.csv"
     cols = ["workload", "db", "strategy", "arm", "ra_kb", "rep", "warmup",
             "cold_pct", "delivery_pct", "first_query_us", "preproc_us",
-            "e2e_us", "avg_us", "majflt", "minflt", "load", "memavail_kb"]
+            "open_us", "deliver_us", "e2e_us", "e2e_warm_us",
+            "avg_us", "majflt", "minflt", "load", "memavail_kb"]
     rawf = open(raw_path, "w", newline="")
     rw = csv.DictWriter(rawf, fieldnames=cols)
     rw.writeheader()
@@ -707,13 +713,21 @@ def main():
     def emit(m, w, ly, strat, arm, rep, warmup, preproc_override=None):
         preproc = preproc_override if preproc_override is not None else m["preproc_us"]
         fq = m["first_query_us"]
+        if preproc_override is not None:           # baseline: no warmer ran
+            open_us, deliver_us = 0.0, 0.0
+        else:                                      # may be None on a pre-instrumentation warmer
+            open_us, deliver_us = m.get("open_us"), m.get("deliver_us")
         e2e = (preproc + fq) if (preproc is not None and fq is not None) else None
+        # warm-process / integrated model: handle already open -> drop cold open(db),
+        # preproc = deliver only (~ static effective_first_query).
+        e2e_warm = (deliver_us + fq) if (deliver_us is not None and fq is not None) else None
         load, mem = _sys_load()
         row = {"workload": w, "db": ly, "strategy": strat, "arm": arm,
                "ra_kb": ra_kb, "rep": rep, "warmup": warmup,
                "cold_pct": _fmt(m["cold_pct"]), "delivery_pct": _fmt(m["delivery_pct"]),
                "first_query_us": _fmt(fq), "preproc_us": _fmt(preproc),
-               "e2e_us": _fmt(e2e), "avg_us": _fmt(m["avg_us"]),
+               "open_us": _fmt(open_us), "deliver_us": _fmt(deliver_us),
+               "e2e_us": _fmt(e2e), "e2e_warm_us": _fmt(e2e_warm), "avg_us": _fmt(m["avg_us"]),
                "majflt": _fmt(m["majflt"]), "minflt": _fmt(m["minflt"]),
                "load": load, "memavail_kb": mem}
         rw.writerow(row); rawf.flush(); raw_rows.append(row)
