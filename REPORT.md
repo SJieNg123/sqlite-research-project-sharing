@@ -59,6 +59,17 @@ classification 僅對dominate cold-start cost 的 interior 集合下達
 共同 sum 為 end-to-end cold-start real cost——此 cost-accounting framework揭露
 出 prefetch literature中長期被忽略的 trade-off。
 
+### 1.1 Research Questions（研究問題）
+
+本研究環繞四個 research question，對應前述兩大挑戰（targeting / cost-accounting）：
+
+- **RQ1（targeting）**：cold-start cost 集中在哪些 page？只針對 page type（B+tree interior）做 prefetch，first-query latency 能省多少？
+- **RQ2（cost-accounting）**：把 prefetch 自身的 preprocessing overhead 算進去後，end-to-end cold-start 是否仍改善？在什麼條件下贏、什麼條件下反而變差？
+- **RQ3（selection vs delivery）**：prefetch 效益可拆成「選對哪些 page（selection）」與「真的把 page 載進 cache（delivery）」；async `madvise` hint 在 first-query 之前實際交付多少？與強制載入（pread oracle）差多少？
+- **RQ4（robustness）**：上述效益在 write churn 造成的 layout 漂移、RAM 壓力（cgroup）、多 process 共享 cache 下是否穩定？
+
+下列貢獻 C1–C4 與 §3.5 的 selection–delivery 拆解共同回應這四個問題。
+
 本文的主要貢獻如下：
 
 > **以下貢獻numbers全部依 P0 master batch 更新(authoritative表見 §5 / [overall_results.md](overall_results.md))。**
@@ -86,7 +97,7 @@ classification 僅對dominate cold-start cost 的 interior 集合下達
 
 本文後續組織如下：§2 闡述 SQLite cold-start mechanics、本研究採用的
 「warm process, cold data」measurement模型，以及 related work 定位；§3 描述
-測試 DB、workload 與 benchmark harness；§4 分述三類strategy（layout /
+測試 DB、workload、benchmark harness、實驗假設與統計方法；§4 分述三類strategy（layout /
 prefetch / memory-sharing）的design選擇；§5 為 experiment and evaluation，
 其中 **§5.5 為本文core trade-off observation**；§6 為 discussion，含 key
 findings、robustness validation、實務recommendation與 limitations；§7 future work；§8
@@ -546,6 +557,30 @@ strategy**（§5 的deployment comparison一律用 async 的 end-to-end，pread 
 >    勝；2f SLRU 因 ms magnitude preprocessing 不具優勢，見 §5.5）。
 > 3. **delivery 代價**：`fq_async − fq_pread`，即 async 作為 hint 相對 oracle 的漏載損失。
 
+### 3.6 實驗假設與外部效度（assumptions & threats to validity）
+
+**本研究跑在真實硬體、非模擬器。** measurement 主機為裸機 Ryzen 9950X + NVMe SSD，cold cache 由全機 `drop-caches`（`sync; echo 3 > /proc/sys/vm/drop_caches`）真實清空，每筆 I/O 都實際打到 disk（`majflt>0` 驗證）。因此沒有模擬器 timing model 失真的疑慮，代價是無法控制 SSD 內部的 FTL/GC 行為。
+
+**本實驗模型納入的真實現象（assumptions）：**
+
+- **「warm process, cold data」cold-start**（§2.2）：app 仍在跑、SQLite connection 與 prepared statement 已建立，但 file-backed page 已被回收——對應 app 自背景被喚醒、裝置自休眠恢復的真實情境。
+- **Write churn 造成的 layout 漂移**（§6.2.1）：50k 寫入 × 10 checkpoint，模擬 DB 隨使用持續成長、page split/append。
+- **RAM 壓力**（§6.2.2）：cgroup `MemoryMax=20M`，模擬 memory 受限裝置下 page 被 reclaim 的競爭。
+- **多 process 共享 cache**（§6.2.3）：MAP_SHARED + cadence re-warm，模擬手機背景 service + 前景 App 共用同一份 page cache。
+
+**未納入（threats to external validity，屬 future work）：**
+
+- **SSD 內部行為**：本研究停在 OS page cache 層（Level 1）；FTL GC、write amplification、device-level 隔離需 FEMU 或實體多裝置（Level 2）才能控制，本機環境（無 kvm/root）未涵蓋。
+- **單機、單一 kernel/SSD**：所有 cell 跑在同一台機器、同一 kernel（6.17）、`read_ahead_kb`=128；跨裝置 / 跨 kernel 的外部效度待獨立複現。
+- **固定 reference DB**：600k row / 102 MB 單一 schema；更大 DB 或多表 join 的行為未測。
+
+### 3.7 Statistical methodology（統計嚴謹性）
+
+- **重複次數**：每個 (workload, layout, strategy, arm) cell 跑 **n=10 reps**（rep-major：同一 cell 的 10 次連續量，降低跨 cell 的環境漂移）；N/K sweep 類為 n≥5。
+- **彙總統計量**：報 **median**（對 cold-start 的長尾 random-I/O 比 mean 穩健），原始檔另存 **p95 / min / stdev**（`summary_p0.csv`）；improvement-% 一律對**同 batch 的 baseline（無 prefetch）臂**配對計算，避免跨 pipeline 比較。
+- **雜訊控制（壓低 rep 間變異）**：(1) `--cpu` 把 measurement 釘在固定 core（`sched_setaffinity`）；(2) `--warm-cpu-ms` 在計時區外把 amd-pstate 拉到滿頻，消除「最快 cell 受 freq ramp 懲罰最重」的偏差；(3) 每 cell 前全機 `drop-caches` + harness `--verify-hotset` 量 `cold_pct`，**`cold_pct>1%` 的 cell 視為冷清失敗、彙整時剔除**；(4) 逐 run 記錄 `loadavg/memavail`，環境漂移可事後察覺。
+- **顯著性判讀（誠實）**：主要結論的**效應量遠大於 rep 間變異**——例如 first-query −30~90%、e2e 相差一個 order of magnitude（2f preproc ~7 ms vs first-q ~0.1 ms），不依賴邊際顯著。**反之，落在雜訊內的差異一律不宣稱排名**：例如 2f 在三 layout 間 first-q 差 <3 µs（< 單筆 noise）→ 結論為「layout-agnostic」；RAM 20M/unlimited 比值 0.95–1.07 → 結論為「幾乎不受影響」。本研究**未**做正式假設檢定 / 信賴區間，因效應量級已足以支撐方向性結論；邊際案例則明確標為「打平 / 在雜訊內」。
+
 ---
 
 ## 4. Strategies
@@ -616,6 +651,16 @@ prefetch cost」的關鍵。詳見 [multiprocess/MULTIPROCESS_MMAP.md](multiproc
 ## 5. Experiment and Evaluation
 
 > **P0 master batch（authoritative）**：本章全部numbers為 P0 pipeline rerun(`run_p0.py`,全 cell `cold_pct`=0),authoritative表見 [overall_results.md](overall_results.md)、原始檔 [`p0_runs/summary_p0.csv`](p0_runs/summary_p0.csv)。core:first-query 最低為 **2f_slru(−79~90%)**,但其 preproc 使 `e2e` 不具優勢;**e2e 取決於 baseline 有多慢**——快 workload(A)上 prefetch e2e 反而變差,慢 workload(C)上 **2e_K10 e2e −56%(462µs)**。
+
+**預期 vs 實際（本章解讀主軸）**：下表先列開工前的預期，§5.1–§5.5 的數據逐一檢驗。**最重要的發現都來自「不符合預期」的格子**——這也是本研究的 core observation（RQ1–RQ2）。
+
+| # | 原本預期 | 實際結果 | 是否符合 |
+|---|---|---|---|
+| 1 | Prefetch 普遍能改善 cold-start | first-query 普遍改善（−30~90%），但**算進 preprocessing 後，快 workload(A) 上 e2e 反而變差** | **出乎意料**（§5.5）|
+| 2 | 載越多 page（整份 working set，2f）效益越好 | 2f first-q 最低，但 ~7 ms preproc 使 **e2e 慢一個 order of magnitude** | **出乎意料**（§5.5）|
+| 3 | layers_N 有「N=5 universal sweet spot」 | 形狀依 (workload, layout) 而異：A/Z N≥5 plateau、**C 要 N=92**、N=1 反而變慢 | **部分不符**（§5.3）|
+| 4 | 慢 workload 上 access-pattern + 少量熱 leaf 最有效益 | C 上 2e_K10 **first-q −85%、e2e −56%**，是唯一 e2e 真正贏的格子 | **符合**（§5.4）|
+| 5 | RAM 壓力會吃掉 prefetch 效益 | cgroup 20M 下 first-q 幾乎不受影響（ratio 0.95–1.07） | **符合（但原因不同）**（§6.2.2）|
 
 ### 5.1 Per-workload best methods (overview)
 
