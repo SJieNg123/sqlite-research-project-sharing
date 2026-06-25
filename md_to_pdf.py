@@ -12,10 +12,9 @@ Handles:
     to the source, then remove it on exit.
   * Relative inline images (e.g. figures/out/*.png) — resolved against the source dir
     (the markdown-pdf "archive"), so the figures embed.
-
-Limitations:
-  * `$$ ... $$` LaTeX math is not rendered (markdown-it has no math extension);
-    it appears literally. The report has only the two e2e formulas in §3.4.
+  * LaTeX math — markdown-it has no math extension, so each `$$ ... $$` block is
+    rendered to a PNG via matplotlib mathtext and embedded as an image (inline
+    `$ ... $` becomes code). Falls back to readable text if matplotlib is absent.
 """
 import re
 import sys
@@ -47,17 +46,57 @@ img {{ max-width: 100%; }}
 """
 
 
-def soften_display_math(text: str) -> str:
-    """markdown-it has no math extension, so a ``$$ ... $$`` block would print as raw
-    LaTeX. Render it as plain readable text instead (only touches ``$$``-delimited
-    blocks; inline ``$`` is left alone to avoid hitting shell/`$` in code)."""
-    def clean(m: "re.Match") -> str:
-        s = m.group(1)
-        s = re.sub(r"\\text\{([^}]*)\}", r"\1", s)
-        s = (s.replace(r"\qquad", "      ").replace(r"\quad", "   ")
-               .replace("\\_", "_").replace("\\", "").strip())
-        return f"\n`{s}`\n"
-    return re.sub(r"\$\$(.+?)\$\$", clean, text, flags=re.S)
+def _latex_to_text(s: str) -> str:
+    """Last-resort readable plain text for a LaTeX fragment (used if matplotlib is absent)."""
+    s = re.sub(r"\\text\{([^}]*)\}", r"\1", s)
+    return (s.replace(r"\qquad", "      ").replace(r"\quad", "   ")
+             .replace("\\_", "_").replace("\\", "").strip())
+
+
+def prepare_math(text: str, root: Path):
+    """markdown-it has no math extension. Render each ``$$ ... $$`` display block to a PNG
+    via matplotlib mathtext and embed it as an image (formulas separated by ``\\qquad``
+    become side-by-side images); render inline ``$ ... $`` as code. Fall back to readable
+    code text if matplotlib is unavailable or a formula won't parse.
+    Returns (new_text, [created png Paths] to clean up)."""
+    created: list = []
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        have_mpl = True
+    except Exception:
+        have_mpl = False
+
+    idx = [0]
+
+    def render_one(part: str) -> str:
+        idx[0] += 1
+        fname = f"_md2pdf_math{idx[0]}.png"
+        fig = plt.figure()
+        fig.text(0.5, 0.5, "$" + part.replace(r"\text", r"\mathrm") + "$",
+                 fontsize=16, ha="center", va="center")
+        fig.savefig(root / fname, dpi=200, bbox_inches="tight", pad_inches=0.1, transparent=True)
+        plt.close(fig)
+        created.append(root / fname)
+        return f"![formula]({fname})"
+
+    def repl_block(m: "re.Match") -> str:
+        parts = [p.strip() for p in re.split(r"\\qquad|\\\\", m.group(1).strip()) if p.strip()]
+        out = []
+        for part in parts:
+            if have_mpl:
+                try:
+                    out.append(render_one(part))
+                    continue
+                except Exception:
+                    pass
+            out.append(f"`{_latex_to_text(part)}`")
+        return "\n\n" + "  ".join(out) + "\n\n"
+
+    text = re.sub(r"\$\$(.+?)\$\$", repl_block, text, flags=re.S)
+    text = re.sub(r"\$([^$\n]+?)\$", lambda m: f"`{_latex_to_text(m.group(1))}`", text)
+    return text, created
 
 
 def main() -> None:
@@ -73,7 +112,9 @@ def main() -> None:
     atexit.register(lambda: font_path.unlink(missing_ok=True))
 
     css = CSS_TEMPLATE.format(font=FONT_FILE)
-    text = soften_display_math(src.read_text(encoding="utf-8"))
+    text, math_imgs = prepare_math(src.read_text(encoding="utf-8"), root)
+    for mp in math_imgs:
+        atexit.register(lambda p=mp: p.unlink(missing_ok=True))
     pdf = MarkdownPdf(toc_level=3, mode="commonmark", optimize=True)
     pdf.add_section(Section(text, root=str(root)), user_css=css)
     pdf.meta["title"] = src.stem
