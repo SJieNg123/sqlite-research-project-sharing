@@ -10,11 +10,13 @@ Handles:
   * Chinese (CJK) text — this box has no system CJK font, so we embed PyMuPDF's
     built-in CJK font (`china-t`, also covers ASCII) via an @font-face written next
     to the source, then remove it on exit.
-  * Relative inline images (e.g. figures/out/*.png) — resolved against the source dir
-    (the markdown-pdf "archive"), so the figures embed.
-  * LaTeX math — markdown-it has no math extension, so each `$$ ... $$` block is
-    rendered to a PNG via matplotlib mathtext and embedded as an image (inline
-    `$ ... $` becomes code). Falls back to readable text if matplotlib is absent.
+  * Relative inline images (e.g. figures/out/*.png) — resolved against the source dir.
+  * Figures never get shrunk to fit a page bottom: `fitz.Story` scales an image down to
+    the space left on the page, so each figure is placed in its own markdown-pdf Section
+    (every Section starts on a fresh page) -> the figure renders at full width.
+  * LaTeX math — markdown-it has no math extension, so each `$$ ... $$` block is rendered
+    to a PNG via matplotlib mathtext and embedded as an image (inline `$ ... $` -> code);
+    falls back to readable text if matplotlib is absent.
 """
 import re
 import sys
@@ -45,6 +47,8 @@ blockquote {{ border-left: 3px solid #ccc; padding: 1px 9px; color: #333; }}
 img {{ max-width: 100%; }}
 """
 
+IMG_LINE = re.compile(r"^!\[.*\]\((figures/[^)]+)\)\s*$")
+
 
 def _latex_to_text(s: str) -> str:
     """Last-resort readable plain text for a LaTeX fragment (used if matplotlib is absent)."""
@@ -54,11 +58,9 @@ def _latex_to_text(s: str) -> str:
 
 
 def prepare_math(text: str, root: Path):
-    """markdown-it has no math extension. Render each ``$$ ... $$`` display block to a PNG
-    via matplotlib mathtext and embed it as an image (formulas separated by ``\\qquad``
-    become side-by-side images); render inline ``$ ... $`` as code. Fall back to readable
-    code text if matplotlib is unavailable or a formula won't parse.
-    Returns (new_text, [created png Paths] to clean up)."""
+    """Render each ``$$ ... $$`` display block to a PNG via matplotlib mathtext and embed
+    it (formulas split on ``\\qquad`` -> side by side); inline ``$ ... $`` -> code. Falls
+    back to readable text if matplotlib is unavailable. Returns (new_text, [png paths])."""
     created: list = []
     try:
         import matplotlib
@@ -99,6 +101,33 @@ def prepare_math(text: str, root: Path):
     return text, created
 
 
+def _fig_dims(root: Path) -> dict:
+    """{(px_w, px_h): 'figures/out/NAME.png'} for every figure, to map an embedded image
+    in the PDF back to its source path (markdown-pdf preserves pixel dimensions)."""
+    out = {}
+    fdir = root / "figures" / "out"
+    if fdir.is_dir():
+        for f in fdir.glob("*.png"):
+            px = fitz.Pixmap(str(f))
+            out[(px.width, px.height)] = f"figures/out/{f.name}"
+    return out
+
+
+def _split_sections(text: str, break_before: set) -> list:
+    """Split the markdown into chunks, starting a new chunk (= new PDF page) right before
+    each image whose path is in ``break_before``. Images are standalone block lines, so
+    this never splits a table/list."""
+    chunks, cur = [], []
+    for line in text.split("\n"):
+        m = IMG_LINE.match(line.strip())
+        if m and m.group(1) in break_before and any(c.strip() for c in cur):
+            chunks.append("\n".join(cur))
+            cur = []
+        cur.append(line)
+    chunks.append("\n".join(cur))
+    return [c for c in chunks if c.strip()]
+
+
 def main() -> None:
     src = Path(sys.argv[1] if len(sys.argv) > 1 else "REPORT.md").resolve()
     out = Path(sys.argv[2]).resolve() if len(sys.argv) > 2 else src.with_suffix(".pdf")
@@ -115,11 +144,17 @@ def main() -> None:
     text, math_imgs = prepare_math(src.read_text(encoding="utf-8"), root)
     for mp in math_imgs:
         atexit.register(lambda p=mp: p.unlink(missing_ok=True))
+
+    # Give every figure its own page (fresh Section) so Story can't shrink it to a page
+    # bottom; figures render at full width.
+    break_before = set(_fig_dims(root).values())
+    chunks = _split_sections(text, break_before)
     pdf = MarkdownPdf(toc_level=3, mode="commonmark", optimize=True)
-    pdf.add_section(Section(text, root=str(root)), user_css=css)
+    for chunk in chunks:
+        pdf.add_section(Section(chunk, root=str(root)), user_css=css)
     pdf.meta["title"] = src.stem
     pdf.save(str(out))
-    print(f"wrote {out}  ({out.stat().st_size // 1024} KB)")
+    print(f"wrote {out}  ({out.stat().st_size // 1024} KB, {len(chunks)} sections)")
 
 
 if __name__ == "__main__":
