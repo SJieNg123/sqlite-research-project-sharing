@@ -173,3 +173,7 @@ p0_runs*_matrix.log
 # all P0 sweep outdirs: keep CSVs, ignore intermediates
 p0_runs*/work/
 p0_runs*/regen_work/
+
+# md_to_pdf.py outputs
+REPORT.pdf
+_md2pdf_cjk.ttf
