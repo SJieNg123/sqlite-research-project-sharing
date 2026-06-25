@@ -386,7 +386,7 @@ BLOB(100))` 加上 secondary index `idx_items_k1k2 ON items(k1, k2)`，含
 以消除 cold-start 的 random I/O」。三種 layout（1a / 1b / 1c）shared同一份
 schema 與 600,000 row 內容，僅 page physical排列不同（詳見 §4.1 與圖 1）。
 
-![三種 layout 下 92 個 interior page 在file裡的位置](figures/out/01_page_distribution.png)
+![三種 layout 下 92 個 interior page 在file裡的位置](https://github.com/wongzinc/sqlite-research-project-sharing/blob/main/figures/out/01_page_distribution.png)
 
 *圖 1：interior page（紅色）在三 layout 下的physical分佈。**1a 原始**：散落
 整個 102 MB；**1b VACUUM**：略集中但仍散；**1c type-aware**：全部集中於
@@ -657,7 +657,7 @@ P0 下(layout orig,async;baseline A 529 / B 760 / C 1096 µs),「first-query 最
 > 只有慢 workload(C)的 2e_K10 贏;**warm-process / integrated**(app 已在跑、重用 handle、不付冷 open,
 > ≈ static 的算法)下,**targeted prefetch 在三個 workload 的 e2e 都贏**(見 §5.5)。
 
-![7 種strategy × 3 種 layout 跨 A/B/C 的 first query latency comparison](figures/out/05_strategy_comparison.png)
+![7 種strategy × 3 種 layout 跨 A/B/C 的 first query latency comparison](https://github.com/wongzinc/sqlite-research-project-sharing/blob/main/figures/out/05_strategy_comparison.png)
 
 *圖 5(P0):每個 workload × layout 下各strategy的 async first-query(越短越好)。
 first-q 上 2f 全部最低,但 e2e 要看 §5.5 的兩個部署模型——warm-process 下 targeted prefetch 三 workload 皆贏。*
@@ -678,7 +678,7 @@ Workload A、layout orig（µs）:
 
 > **觀察**:在 A 這種 baseline 本來就快(~529 µs)的 cell,**standalone warmer 的冷 open(db)(~193 µs)+ deliver 超過 first-query 省下的時間 → `e2e_std` 比 baseline 慢(+27~29%)**;但若 prefetch **integrate 進 app**(handle 已開、不付冷 open,= warm-process),**`e2e_warm` 反而比 baseline 快 7~9%**。差別就是那一次冷 open(db)(§3.4 / §5.5)。2f 因 deliver ~7 ms,兩模型都遠輸。
 
-![Workload A 上 layout × strategy 的效果](figures/out/02_layout_effect.png)
+![Workload A 上 layout × strategy 的效果](https://github.com/wongzinc/sqlite-research-project-sharing/blob/main/figures/out/02_layout_effect.png)
 
 *圖 2(P0):Workload A、async first-query,各 layout 的 baseline 與strategy(2f ≈ −79% first-q)。注意 first-query 與 end-to-end 的結果不同(見上表)。*
 
@@ -692,7 +692,7 @@ P0 first-query improvement上限(orig,vs baseline):
 | **B**（uniform 隨機讀）| −42~43% | 2f −83% | 每筆打 cold leaf,interior-only 卡在 ~−43%,只有整份 dump 才壓得低 |
 | **C**（查file tail新資料）| −37~38% | **2e_K10 −81%** / 2f −89% | 每筆 cold leaf,但**「access-pattern」加載 top-K 熱 leaf 可突破**到 −81% |
 
-![A/B/C 三 workload 在 clean DB 上的 layers_N plateau（P0）](figures/out/04_nsweep_plateau.png)
+![A/B/C 三 workload 在 clean DB 上的 layers_N plateau（P0）](https://github.com/wongzinc/sqlite-research-project-sharing/blob/main/figures/out/04_nsweep_plateau.png)
 *（clean DB、layout orig、async first-query;A/B 在 N=5 落底、C 需 N=92。3-layout 版見 Figure 11、churned-DB 版見 Figure 12。）*
 
 *圖 4：N（prefetch 多少個 interior page）對 first query 的影響。**A 在 N=5
@@ -736,13 +736,13 @@ layout orig(baseline 1096 µs):
 
 **兩種觀點的視覺對比**：
 
-![純 first-query latency comparison（preprocessing 沒算進去）](figures/out/13_strategy_firstq_bars.png)
+![純 first-query latency comparison（preprocessing 沒算進去）](https://github.com/wongzinc/sqlite-research-project-sharing/blob/main/figures/out/13_strategy_firstq_bars.png)
 
 *圖 13(P0)：純 first-query latency（async,log scale）。**2f SLRU first-q 全部最低**——
 A/B/C ~123–128 µs(−76~89%),比 baseline 529–1096 µs 短一個order of magnitude。這是 §5.1
 「first-q 最低」欄的視覺版本(但 e2e 另有結論,見圖 14)。*
 
-![End-to-end cold start：兩個部署模型 stacked，跟 baseline 比](figures/out/14_strategy_endtoend_stacked.png)
+![End-to-end cold start：兩個部署模型 stacked，跟 baseline 比](https://github.com/wongzinc/sqlite-research-project-sharing/blob/main/figures/out/14_strategy_endtoend_stacked.png)
 
 *圖 14(P0)：**end-to-end cold start,兩個部署模型**(stacked:first-q + deliver + 灰色冷 open)。
 **warm-process e2e = bar 去掉灰色(= first-q + deliver);standalone e2e = 整條 bar 頂**;
@@ -835,7 +835,7 @@ DB 被持續 write（11 個 checkpoint × 5k mutation ops = 5.5 萬筆）後,**s
 完全沒decay**:P0 量到 C 上 2e_K10_static 跨 checkpoint maintain ~82–86 µs(vs baseline ~580 µs),
 ck0→ck10 無上升趨勢;三 layout(orig/vacuum/ta)皆然。
 
-![11 個 checkpoint × 5k churn ops 下 A/B/C 的 first query 演化](figures/out/07_churn_evolution.png)
+![11 個 checkpoint × 5k churn ops 下 A/B/C 的 first query 演化](https://github.com/wongzinc/sqlite-research-project-sharing/blob/main/figures/out/07_churn_evolution.png)
 
 *圖 7(P0)：DB 被持續 write 後,static t=0 hot pages 在 A/B/C 三種 workload 上都不decay
 (主面板 = layout orig;CSV 另含 vacuum/ta)。C 上 2e_K10_static 跨 11 個 checkpoint
@@ -850,7 +850,7 @@ ck0→ck10 無上升趨勢;三 layout(orig/vacuum/ta)皆然。
 - **為什麼pressure這麼小**:resident working set(2f hotset ~4.4k page ≈ **17 MB**)其實
   **略小於** 20M cap,hotset 幾乎塞得下、eviction有限。
 
-![RAM-pressure heatmap (20 MB cgroup vs unlimited)](figures/out/06_ram_pressure_heatmap.png)
+![RAM-pressure heatmap (20 MB cgroup vs unlimited)](https://github.com/wongzinc/sqlite-research-project-sharing/blob/main/figures/out/06_ram_pressure_heatmap.png)
 
 *圖 6(P0)：把可用 RAM 砍到 20 MB（A/B/C × 3 layout × 6 strategy）。
 每 cell 的「20M / unlimited」async first-query ratio**全部落在 0.95–1.07**——memory
@@ -860,7 +860,7 @@ pressure 幾乎不影響 first query(working set ~17 MB < 20M cap)。*
 
 一個 process 做 prefetch，所有shared同一份 cache 的 process 都受惠。
 
-![Multi-process prefetch cadence 對 first query latency 的影響](figures/out/08_cadence_comparison.png)
+![Multi-process prefetch cadence 對 first query latency 的影響](https://github.com/wongzinc/sqlite-research-project-sharing/blob/main/figures/out/08_cadence_comparison.png)
 
 *圖 8(P0)：background warmer 每 cadence 秒re-warm、前景每 probe 做全機 drop-caches 後量first-query。
 **Cadence 是一個 trade-off 參數**：cadence=1s/5s maintain first-q ~26/29 µs、cadence=30s/never
@@ -971,7 +971,7 @@ warm-process 不含」這兩層 trade-off,在既有 prefetch literature中很少
 | 全 P0 數據（strategy×workload×layout + N/K-sweep + RAM + churn + cadence）| [overall_results.md](https://github.com/wongzinc/sqlite-research-project-sharing/blob/main/overall_results.md) |
 | 每個strategy的原理與狀態 | [overall_strategies.md](https://github.com/wongzinc/sqlite-research-project-sharing/blob/main/overall_strategies.md) |
 | 四種 workload 的定義 | [overall_workloads.md](https://github.com/wongzinc/sqlite-research-project-sharing/blob/main/overall_workloads.md) |
-| Figures | [figures/out/](figures/out/) |
+| Figures | [figures/out/](https://github.com/wongzinc/sqlite-research-project-sharing/blob/main/figures/out/) |
 
 ### 9.2 External References
 
@@ -1007,14 +1007,14 @@ warm-process 不含」這兩層 trade-off,在既有 prefetch literature中很少
 
 ### A.1 Latency CDF（cold → warm 過渡區）
 
-![前 50 筆 query 的累計 latency（cold→warm 過渡區）](figures/out/03_latency_cdf.png)
+![前 50 筆 query 的累計 latency（cold→warm 過渡區）](https://github.com/wongzinc/sqlite-research-project-sharing/blob/main/figures/out/03_latency_cdf.png)
 
 *圖 3：前 50 筆 query 的累計時間。Prefetch 把「cold→warm」的過渡時間整段
 壓掉；第 50 筆之後所有方法都converge到 ~1.5 µs/query。*
 
 ### A.2 Workload Z robustness check（低 id hotspot 變體）
 
-![Workload Z：低 id hotspot 的 Zipfian 變體](figures/out/09_zlowkey_nsweep.png)
+![Workload Z：低 id hotspot 的 Zipfian 變體](https://github.com/wongzinc/sqlite-research-project-sharing/blob/main/figures/out/09_zlowkey_nsweep.png)
 
 *圖 9：把 hotspot 從 [8, 99997] 移到 [1, 1000]（低 id 區段）的 robustness
 check。N-sweep 形狀跟 Workload A 同形（差 ≤ 5pp）——「hotspot 落在哪個 key
@@ -1022,15 +1022,15 @@ check。N-sweep 形狀跟 Workload A 同形（差 ≤ 5pp）——「hotspot 落
 
 ### A.3 Interior:leaf 比例掃描（3a/3b ratio variants）
 
-![Interior:leaf 比例掃描（3a/3b ratio variants）](figures/out/10_ratio_sweep.png)
+![Interior:leaf 比例掃描（3a/3b ratio variants）](https://github.com/wongzinc/sqlite-research-project-sharing/blob/main/figures/out/10_ratio_sweep.png)
 
 *圖 10：Load interior 跟 hot leaf 的比例（K=10/40/50/92/100/500）。**K 才是
 主要變因，ratio 不是**——A 上 K=500 才追平、C 上 K=10 就 saturate。*
 
 ### A.4 Dense N=0..92 sweep（rigor pass）
 
-full數據 + 兩張 9-cell grid 圖在 [figures/out/11_nsweep_full.png](figures/out/11_nsweep_full.png)
-（clean DB, A/B/C × 1a/1b/1c）跟 [figures/out/12_nsweep_full_churn.png](figures/out/12_nsweep_full_churn.png)
+full數據 + 兩張 9-cell grid 圖在 [figures/out/11_nsweep_full.png](https://github.com/wongzinc/sqlite-research-project-sharing/blob/main/figures/out/11_nsweep_full.png)
+（clean DB, A/B/C × 1a/1b/1c）跟 [figures/out/12_nsweep_full_churn.png](https://github.com/wongzinc/sqlite-research-project-sharing/blob/main/figures/out/12_nsweep_full_churn.png)
 （churn DB, A/B/C）。Sparse 6-pt 跟 dense 93-pt slice的對照、9/12 cell conclusion
 不變但 3 個 sweet spot 被漏掉的分析，見 [overall_strategies.md](https://github.com/wongzinc/sqlite-research-project-sharing/blob/main/overall_strategies.md) 2c bullet 跟
 [overall_workloads.md](https://github.com/wongzinc/sqlite-research-project-sharing/blob/main/overall_workloads.md) 「已完成的覆蓋」表。
