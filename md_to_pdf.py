@@ -39,7 +39,7 @@ h3 {{ font-size: 13px; }}
 h4 {{ font-size: 12px; }}
 table {{ border-collapse: collapse; font-size: 9.5px; margin: 6px 0; }}
 th, td {{ border: 1px solid #999; padding: 2px 5px; }}
-th {{ background: #eee; }}
+th {{ font-weight: bold; border-bottom: 2px solid #555; }}
 code {{ background: #f4f4f4; padding: 0 2px; font-size: 10px; }}
 pre {{ background: #f4f4f4; padding: 6px; }}
 pre code {{ background: none; }}
