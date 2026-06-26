@@ -1,1 +1,0 @@
-../../prefetch_churn/workloads/page_churn_benchmark_high.txt
