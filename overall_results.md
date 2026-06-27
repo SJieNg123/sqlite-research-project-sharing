@@ -295,3 +295,132 @@
 - RAM 20M:[`results/ram20m/`](results/ram20m/summary.csv)、churn:[`results/churn/`](results/churn/)、cadence:[`results/cadence/`](results/cadence/cadence_results.csv)
 - 凍結清單:[`results/main/hotset_freeze.sha256`](results/main/hotset_freeze.sha256)。完整執行覆蓋見 [IMPLEMENTATION_PIPELINES.md §3.8](IMPLEMENTATION_PIPELINES.md)。
 
+
+## Cross-seed workload-sensitivity (10 seeds) — R3
+
+10 個 random seed 各重生成 A/B/C（同一份 DB、同 reps），各跑一次完整 matrix；
+per-seed 效應 = 同 seed 內 strategy vs baseline 的 Δ%，下表報跨 10 seed 的 **mean、
+bootstrap 95% CI of the mean、符號一致性 (n/10)、verdict**（robust=CI 不跨 0；
+directional=CI 跨 0 但 ≥7/10 同號；tie=否則）。完整 54-cell×3-metric 見 
+[`results/stats/uncertainty.csv`](results/stats/uncertainty.csv)；分析腳本 `tools/stats_uncertainty.py`。
+
+機器穩定性對照：2f_slru first-query 跨 10 seed 維持 125.9–130.2 µs（與第一筆查哪個 key 無關），
+證明 sweep 期間無 CPU throttle、跨 seed 變異來自 workload 抽樣。
+
+### warm-process e2e（本研究主張的部署指標）（async arm）
+
+| layout | workload | strategy | mean Δ% | 95% CI | sign | verdict |
+|---|---|---|---:|---|---:|---|
+| orig | A | layers_5 | -5.12 | [-15.94, 4.42] | 6/10 | tie |
+| orig | A | layers_92 | -12.5 | [-18.05, -5.7] | 9/10 | robust |
+| orig | A | 2d | -24.95 | [-29.44, -19.83] | 10/10 | robust |
+| orig | A | 2e_K10 | -36.01 | [-49.98, -23.07] | 10/10 | robust |
+| orig | A | 2e_K500 | 79.07 | [36.53, 141.43] | 10/10 | robust |
+| orig | A | 2f_slru | 744.14 | [661.67, 870.21] | 10/10 | robust |
+| orig | B | layers_5 | -1.27 | [-11.71, 6.68] | 8/10 | directional |
+| orig | B | layers_92 | -13.17 | [-20.45, -1.74] | 9/10 | robust |
+| orig | B | 2d | -25.44 | [-31.56, -16.18] | 9/10 | robust |
+| orig | B | 2e_K10 | -24.65 | [-30.31, -15.61] | 9/10 | robust |
+| orig | B | 2e_K500 | 40.24 | [24.48, 55.14] | 10/10 | robust |
+| orig | B | 2f_slru | 703.6 | [631.93, 799.01] | 10/10 | robust |
+| orig | C | layers_5 | 4.78 | [3.75, 6.06] | 10/10 | robust |
+| orig | C | layers_92 | -20.62 | [-21.97, -19.22] | 10/10 | robust |
+| orig | C | 2d | -35.88 | [-38.54, -33.07] | 10/10 | robust |
+| orig | C | 2e_K10 | -70.47 | [-71.88, -69.13] | 10/10 | robust |
+| orig | C | 2e_K500 | -30.63 | [-34.07, -27.27] | 10/10 | robust |
+| orig | C | 2f_slru | -9.0 | [-13.87, -4.07] | 8/10 | robust |
+| vacuum | A | layers_5 | -15.12 | [-26.52, -5.1] | 10/10 | robust |
+| vacuum | A | layers_92 | -25.97 | [-31.6, -17.69] | 9/10 | robust |
+| vacuum | A | 2d | -36.73 | [-42.2, -29.38] | 10/10 | robust |
+| vacuum | A | 2e_K10 | -44.4 | [-56.62, -31.94] | 10/10 | robust |
+| vacuum | A | 2e_K500 | 16.27 | [2.72, 30.47] | 7/10 | robust |
+| vacuum | A | 2f_slru | 458.24 | [411.07, 517.75] | 10/10 | robust |
+| vacuum | B | layers_5 | -10.5 | [-21.56, -2.45] | 10/10 | robust |
+| vacuum | B | layers_92 | -22.49 | [-28.33, -13.41] | 9/10 | robust |
+| vacuum | B | 2d | -34.55 | [-39.89, -26.47] | 10/10 | robust |
+| vacuum | B | 2e_K10 | -33.15 | [-38.82, -23.96] | 9/10 | robust |
+| vacuum | B | 2e_K500 | 18.02 | [3.89, 31.53] | 9/10 | robust |
+| vacuum | B | 2f_slru | 435.43 | [386.88, 506.03] | 10/10 | robust |
+| vacuum | C | layers_5 | -2.46 | [-3.64, -1.3] | 9/10 | robust |
+| vacuum | C | layers_92 | -28.5 | [-29.81, -27.19] | 10/10 | robust |
+| vacuum | C | 2d | -39.87 | [-41.77, -38.11] | 10/10 | robust |
+| vacuum | C | 2e_K10 | -74.02 | [-75.39, -72.52] | 10/10 | robust |
+| vacuum | C | 2e_K500 | -38.06 | [-41.01, -34.89] | 10/10 | robust |
+| vacuum | C | 2f_slru | -34.3 | [-38.2, -30.02] | 10/10 | robust |
+| ta | A | layers_5 | 0.69 | [-9.73, 12.63] | 6/10 | tie |
+| ta | A | layers_92 | -15.66 | [-23.43, -8.19] | 9/10 | robust |
+| ta | A | 2d | -22.52 | [-29.98, -15.6] | 10/10 | robust |
+| ta | A | 2e_K10 | -31.82 | [-47.58, -16.92] | 9/10 | robust |
+| ta | A | 2e_K500 | 44.61 | [27.86, 61.96] | 10/10 | robust |
+| ta | A | 2f_slru | 722.16 | [635.81, 811.01] | 10/10 | robust |
+| ta | B | layers_5 | 12.99 | [-1.13, 28.32] | 5/10 | tie |
+| ta | B | layers_92 | -14.02 | [-24.63, -3.65] | 7/10 | robust |
+| ta | B | 2d | -19.86 | [-29.43, -10.27] | 9/10 | robust |
+| ta | B | 2e_K10 | -19.89 | [-28.31, -11.76] | 10/10 | robust |
+| ta | B | 2e_K500 | 51.0 | [29.82, 72.79] | 9/10 | robust |
+| ta | B | 2f_slru | 755.75 | [642.34, 878.62] | 10/10 | robust |
+| ta | C | layers_5 | 5.57 | [5.18, 5.96] | 10/10 | robust |
+| ta | C | layers_92 | -24.64 | [-25.72, -23.65] | 10/10 | robust |
+| ta | C | 2d | -29.65 | [-30.77, -28.64] | 10/10 | robust |
+| ta | C | 2e_K10 | -62.99 | [-64.72, -61.4] | 10/10 | robust |
+| ta | C | 2e_K500 | -10.64 | [-15.03, -6.36] | 9/10 | robust |
+| ta | C | 2f_slru | 4.61 | [-1.06, 10.02] | 6/10 | tie |
+
+### first-query latency（async arm）
+
+| layout | workload | strategy | mean Δ% | 95% CI | sign | verdict |
+|---|---|---|---:|---|---:|---|
+| orig | A | layers_5 | -13.23 | [-24.37, -3.26] | 8/10 | robust |
+| orig | A | layers_92 | -35.62 | [-39.58, -31.36] | 10/10 | robust |
+| orig | A | 2d | -35.09 | [-38.86, -31.02] | 10/10 | robust |
+| orig | A | 2e_K10 | -47.72 | [-60.85, -35.79] | 10/10 | robust |
+| orig | A | 2e_K500 | -17.62 | [-59.14, 48.87] | 9/10 | directional |
+| orig | A | 2f_slru | -84.9 | [-86.35, -82.64] | 10/10 | robust |
+| orig | B | layers_5 | -9.04 | [-19.35, -0.92] | 7/10 | robust |
+| orig | B | layers_92 | -34.88 | [-40.91, -25.61] | 9/10 | robust |
+| orig | B | 2d | -35.13 | [-40.78, -26.81] | 10/10 | robust |
+| orig | B | 2e_K10 | -35.69 | [-40.79, -27.76] | 10/10 | robust |
+| orig | B | 2e_K500 | -53.08 | [-65.33, -41.47] | 10/10 | robust |
+| orig | B | 2f_slru | -85.73 | [-87.03, -84.03] | 10/10 | robust |
+| orig | C | layers_5 | -2.39 | [-3.52, -0.95] | 9/10 | robust |
+| orig | C | layers_92 | -41.11 | [-43.19, -38.96] | 10/10 | robust |
+| orig | C | 2d | -42.93 | [-45.89, -39.83] | 10/10 | robust |
+| orig | C | 2e_K10 | -78.68 | [-79.7, -77.71] | 10/10 | robust |
+| orig | C | 2e_K500 | -78.67 | [-79.73, -77.66] | 10/10 | robust |
+| orig | C | 2f_slru | -87.63 | [-88.22, -87.09] | 10/10 | robust |
+| vacuum | A | layers_5 | -22.18 | [-33.39, -12.72] | 10/10 | robust |
+| vacuum | A | layers_92 | -44.82 | [-49.73, -38.12] | 10/10 | robust |
+| vacuum | A | 2d | -44.62 | [-49.87, -37.95] | 10/10 | robust |
+| vacuum | A | 2e_K10 | -53.61 | [-65.6, -41.77] | 10/10 | robust |
+| vacuum | A | 2e_K500 | -61.8 | [-70.64, -52.6] | 10/10 | robust |
+| vacuum | A | 2f_slru | -86.98 | [-88.05, -85.61] | 10/10 | robust |
+| vacuum | B | layers_5 | -17.2 | [-28.01, -9.29] | 10/10 | robust |
+| vacuum | B | layers_92 | -40.35 | [-44.98, -33.4] | 10/10 | robust |
+| vacuum | B | 2d | -42.1 | [-46.88, -34.97] | 10/10 | robust |
+| vacuum | B | 2e_K10 | -42.01 | [-47.03, -33.88] | 10/10 | robust |
+| vacuum | B | 2e_K500 | -55.94 | [-67.61, -44.96] | 10/10 | robust |
+| vacuum | B | 2f_slru | -87.61 | [-88.69, -86.03] | 10/10 | robust |
+| vacuum | C | layers_5 | -8.71 | [-10.1, -7.32] | 10/10 | robust |
+| vacuum | C | layers_92 | -45.81 | [-47.79, -44.07] | 10/10 | robust |
+| vacuum | C | 2d | -46.04 | [-48.24, -44.02] | 10/10 | robust |
+| vacuum | C | 2e_K10 | -81.23 | [-82.22, -80.16] | 10/10 | robust |
+| vacuum | C | 2e_K500 | -81.14 | [-82.13, -80.06] | 10/10 | robust |
+| vacuum | C | 2f_slru | -89.12 | [-89.71, -88.49] | 10/10 | robust |
+| ta | A | layers_5 | -7.26 | [-18.05, 4.73] | 7/10 | directional |
+| ta | A | layers_92 | -34.76 | [-40.81, -28.96] | 10/10 | robust |
+| ta | A | 2d | -34.8 | [-41.04, -29.01] | 10/10 | robust |
+| ta | A | 2e_K10 | -45.74 | [-60.56, -31.84] | 10/10 | robust |
+| ta | A | 2e_K500 | -41.02 | [-54.1, -27.04] | 9/10 | robust |
+| ta | A | 2f_slru | -85.25 | [-86.77, -83.68] | 10/10 | robust |
+| ta | B | layers_5 | 4.79 | [-8.6, 19.22] | 6/10 | tie |
+| ta | B | layers_92 | -33.82 | [-41.87, -26.03] | 10/10 | robust |
+| ta | B | 2d | -32.89 | [-40.9, -25.04] | 10/10 | robust |
+| ta | B | 2e_K10 | -34.64 | [-41.52, -28.06] | 10/10 | robust |
+| ta | B | 2e_K500 | -38.95 | [-53.88, -24.77] | 10/10 | robust |
+| ta | B | 2f_slru | -84.76 | [-86.76, -82.61] | 10/10 | robust |
+| ta | C | layers_5 | -1.89 | [-2.29, -1.52] | 10/10 | robust |
+| ta | C | layers_92 | -43.41 | [-44.44, -42.31] | 10/10 | robust |
+| ta | C | 2d | -42.6 | [-43.69, -41.45] | 10/10 | robust |
+| ta | C | 2e_K10 | -77.31 | [-78.39, -76.29] | 10/10 | robust |
+| ta | C | 2e_K500 | -77.09 | [-78.16, -76.1] | 10/10 | robust |
+| ta | C | 2f_slru | -86.9 | [-87.49, -86.34] | 10/10 | robust |

@@ -170,3 +170,13 @@ results/*/regen_work/
 # tools/md_to_pdf.py outputs (written next to the source .md = repo root)
 REPORT.pdf
 _md2pdf_cjk.ttf
+
+# --- R3 seed sweep (keep result CSVs + per-seed freeze; ignore heavy/regenerable) ---
+results/seeds/*/work/
+results/seeds/*/regen_work/
+results/seeds/*.log
+results/seeds/*.nohup
+# per-seed hotsets are regenerable (gen_workload.py + run --seed N --regen-hotsets);
+# their sha256 are recorded in each results/seeds/seedNN/hotset_freeze.sha256
+strategies/slru/runs/*_seed*.csv
+strategies/access/runs/*_seed*.csv

@@ -134,10 +134,10 @@
 ## Revision Roadmap
 
 ### Priority 1 — 結構性（必改，~2 週）
-- [ ] R1 兩模型對稱 + warm-process 普遍性論證 + motivation 場景歸類
-- [ ] R2 修正 warm 模型內歸因
-- [ ] R3 補不確定性 + 收斂小效應宣稱
-- [ ] R5 收斂 novelty「first」+ 定位 layout rewriter 於 clustering 傳統
+- [x] R1 兩模型對稱 + warm-process 普遍性論證 + motivation 場景歸類
+- [x] R2 修正 warm 模型內歸因
+- [x] R3 補不確定性 + 收斂小效應宣稱 — **10-seed workload-sensitivity sweep**(同 DB、10 條不同抽樣的 A/B/C × full matrix)，每格報 bootstrap 95% CI + 符號一致性 + verdict。結論：access-pattern targeted prefetch 三 workload warm e2e 皆 robust(A 2e_K10 −36%[−50,−23]、B 2d −25%、C 2e_K10 −70%[−72,−69]、CI 皆不跨 0)；structural layers_5 在 A/B 落雜訊內(A tie、B directional)。新 §3.7 方法 + §6.2.4 結果 + overall_results.md 全表；`tools/{gen_workload,stats_uncertainty}.py` + `results/seeds/`。
+- [x] R5 收斂 novelty「first」+ 定位 layout rewriter 於 clustering 傳統
 
 ### Priority 2 — 內容補充（~1–2 週）
 - [ ] R4 ARM sanity check 或全面 scope 到 desktop
