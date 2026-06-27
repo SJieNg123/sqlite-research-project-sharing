@@ -5,7 +5,10 @@
       "Bash(gh api *)",
       "Bash(python -c \"import sys,json; data=json.load\\(sys.stdin\\); [print\\(item['path']\\) for item in data.get\\('tree',[]\\) if item['type']!='tree']\")",
       "Bash(git mv *)",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(python3 run_experiment.py --help)",
+      "Bash(python3 run_experiment.py --db orig --workload A --strategy 2e_K10 --dry-run)",
+      "Bash(git commit -m ' *)"
     ]
   }
 }
