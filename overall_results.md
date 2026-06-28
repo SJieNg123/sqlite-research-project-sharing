@@ -297,10 +297,13 @@
 > ℹ️ 此處 seed-1 query stream **就是原始 100MB 的 master workload**(原始檔 renamed 成 `workload_*_1.txt`,
 > 日期 2026-05-23;`results/seeds/seed01` 跑這份 orig 的數字與上方 master 表幾乎一致 → 證實同源)。
 > 本節 orig 與 1gb 在**同一批次、rep-major 交錯**量測,是原始 workload 上的 apples-to-apples 尺寸比較。
-> ⚠️ **但本批次跑在較快的機器狀態**:machine-independent 的 `2f_slru` first-query 全格落在 **88–98µs**
-> (標準值 ~122–130µs,見 cross-seed 機器穩定性註),故本節**絕對 fq 系統性比 master/seed01 低約 25%**。
-> 此偏移在 orig 與 1gb 上一致 → **尺寸比較(orig↔1gb)有效**,但**絕對 µs 勿與 master/cross-seed 表逐格對齊**;
-> 100MB 參考請用本節 `orig` 列。cell = async first-query µs(括號 impr% 相對該 (workload,layout) baseline)。
+> **本節是一個自足的 full-boost 批次**(機器滿頻乾淨狀態):machine-independent 的 `2f_slru` first-query
+> 全格落在 **88–98µs**——這是 CPU 滿頻 boost(cpu2 ~5.6 GHz)下「乾淨」的冷啟動下界。
+> 上方 master / cross-seed 表的 `2f_slru` ~122–130µs 則是當時**長時間連跑 sweep、boost 被熱/功耗壓低**的數字
+> (兩者皆有效,只是機器狀態不同;本機無 root 可釘頻,兩態無法互相重現)。
+> 因此**本節絕對 µs 自成一個尺度,不與上方 master / cross-seed 表逐格比**;1gb 的 100MB 對照基準
+> **就是本節同批的 `orig` 列**(同態量測)。**尺寸的相對結論不受機器狀態影響**(下方跨-seed 章用相對 Δ%,更已把此抵消)。
+> cell = async first-query µs(括號 impr% 相對該 (workload,layout) baseline)。
 
 ### Workload A（Zipfian）
 
