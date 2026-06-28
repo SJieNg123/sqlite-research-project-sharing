@@ -42,6 +42,7 @@ for f in figures/0?_*.py; do /home/u03/.cache/coldstart-venv/bin/python "$f"; do
 | 12 | [12_nsweep_full_churn.py](12_nsweep_full_churn.py) | [out/12_nsweep_full_churn.png](out/12_nsweep_full_churn.png) | layers_N sweep on the CHURNED DB (after 50k churn), A/B/C, async. Plateau shape survives churn. | `results/churn/churn_nsweep.csv` |
 | 13 | [13_strategy_firstq_bars.py](13_strategy_firstq_bars.py) | [out/13_strategy_firstq_bars.png](out/13_strategy_firstq_bars.png) | First-query bars per workload (orig, async). 2f_slru lowest (~105 µs); the "deceptive" view (preprocessing excluded). | `results/main/summary.csv` |
 | 14 | [14_strategy_endtoend_stacked.py](14_strategy_endtoend_stacked.py) | [out/14_strategy_endtoend_stacked.png](out/14_strategy_endtoend_stacked.png) | End-to-end (preproc + first-q) per workload. 2f_slru's ~7.5 ms preproc pushes e2e ~15× over baseline; 2e_K10/layers_5 stay below. | `results/main/summary.csv` |
+| 15 | [15_size_scaling_ci.py](15_size_scaling_ci.py) | [out/15_size_scaling_ci.png](out/15_size_scaling_ci.png) | DB-size sensitivity (100 MB vs ~1 GiB), cross-seed effect ± bootstrap 95% CI, 10 seeds each. Top: first-query size-robust (all robust, same sign). Bottom: warm-e2e flips concentrated in workload C (2f −9%→+139%). filled=robust, hollow=tie/directional. | `results/stats/uncertainty.csv` (orig) + `results/stats/uncertainty_1gb.csv` |
 
 ## Style conventions
 

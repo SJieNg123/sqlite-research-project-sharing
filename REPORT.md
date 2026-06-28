@@ -930,6 +930,15 @@ pressure 幾乎不影響 first query(working set ~17 MB < 20M cap)。*
 
 即本研究主張的「小而準 targeted prefetch」在 DB 放大 10× 後**依然成立**，並**更突顯** cache-dump 式 2f 的 deliver 陷阱會**隨 DB 規模惡化**。（機器狀態：1gb 批跑在 full-boost 乾淨態，`2f_slru` anchor 跨 10 seed 維持 98–100 µs、內部極穩；其絕對 µs 自成一個尺度，與 §5 / §6.2.4 的 ~126 µs 批屬不同機器狀態、**僅跨批比相對量**——詳見 §6.4 與 [overall_results.md「資料可比性」](https://github.com/wongzinc/sqlite-research-project-sharing/blob/main/overall_results.md)。資料：`results/size_1gb/`、`results/seeds_1gb/`、`results/stats/uncertainty_1gb.csv`。）
 
+![DB-size sensitivity of the cross-seed effect (100MB vs 1GiB, bootstrap 95% CI)](figures/out/15_size_scaling_ci.png)
+
+*圖 15：1gb 與 orig 各 **10 seed** 的跨-seed 效應（strategy vs 同 seed baseline 的 Δ%）± bootstrap **95% CI**；
+實心 = robust（CI 不跨 0）、空心 = tie/directional。因效應是同 seed 相對量，機器狀態漂移自動抵消、兩尺寸可直接比。
+**上排 first-query**：18 格全為負、兩尺寸方向一致 → 冷啟動效益 **size-robust**（orig `2e_K500/A` 的 directional
+在 1gb 還收斂成 robust）。**下排 warm-process e2e**：size 敏感集中在窄域 **workload C** —— `2f_slru/C` 由 −9%(orig)
+翻成 **+139%**(1gb)、`2e_K500/C` −31%→+35%、`layers_92/C` −21%→+7%（由贏轉輸）；A/B 的 `2f` 兩尺寸都是
++700~930% 大輸（頂部箭頭標值）。對照之下 access-pattern 的 `2d`/`2e_K10` 兩尺寸 e2e 皆穩贏。*
+
 ### 6.3 Practical recommendations
 
 | scenario | recommendation做法 | First-q improvement | End-to-end（warm-process / standalone）|
