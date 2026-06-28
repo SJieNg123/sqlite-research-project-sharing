@@ -149,12 +149,16 @@
 
 ### Priority 3 — 文字與格式（~3 天）
 - [ ] S5 中間 delivery 點
-- [ ] S7 降溫 0.35%
+- [x] S7 降溫 0.35% — Abstract + §2.1 改述為「B+tree fanout 的結構結果、非本研究發現」（§1 原已有此 framing）
 - [ ] S8 澄清 1c 淨價值
-- [ ] 統一 churn 規模數字不一致（摘要 50k vs §6.2.1 11×5k=55k vs §3.6 50k×10）
+- [x] 統一 churn 規模數字不一致 — 全文統一為 **50k（10 輪 × 5k，11 個 checkpoint ck0–ck10）**；順帶統一 robustness 軸數為 **5**
 - [ ] 統一中英術語密度
-- [ ] 標題改為點出 cost-accounting
-- [ ] 圖 14 內嵌並簡化（標「翻盤是否落在 noise 內」）
+- [x] 標題改為點出 cost-accounting — 「SQLite Cold-Start Prefetch 的 Preprocessing Cost-Accounting：為何 first-query 改善 ≠ end-to-end 加速」
+- [~] 圖 14 內嵌並簡化（標「翻盤是否落在 noise 內」）— 已內嵌（§5.5），尚未做「簡化 + 標 noise」的註記
+
+### 額外完成（roadmap 外，2026-06-28）
+- **DB-size scaling robustness 軸（§6.2.5 + 圖 15）**：102 MB → ~1 GiB，A/B/C × 10 seed 跨-seed CI。first-query size-robust（18/18 cell）、warm-e2e 翻盤集中在窄域 C。**部分補強外部效度（CONSENSUS #4 的「單一 102 MB DB」一項，但不替代 R4 的 ARM/mobile）**。資料 `results/{size_1gb,seeds_1gb,stats/uncertainty_1gb.csv}`。
+- **資料可比性方法學**：以 `2f_slru` first-query 為跨-session 機器狀態錨點（全研究 ~96–127 µs、≥4 狀態群），明定「絕對 µs 只在同狀態群內比、跨批用相對量」（overall_results.md「資料可比性」+ §6.4）。
 
 ### 總估時
 - **Major Revision ≈ 5–7 週**
