@@ -180,3 +180,10 @@ results/seeds/*.nohup
 # their sha256 are recorded in each results/seeds/seedNN/hotset_freeze.sha256
 strategies/slru/runs/*_seed*.csv
 strategies/access/runs/*_seed*.csv
+
+# --- R3 size sweep (1gb): keep result CSVs; ignore heavy/regenerable intermediates ---
+results/seeds_1gb/*/work/
+results/seeds_1gb/*/regen_work/
+results/seeds_1gb/*.log
+results/seeds_1gb/*.nohup
+results/size_1gb/*.log

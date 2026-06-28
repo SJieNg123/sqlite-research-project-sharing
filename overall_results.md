@@ -288,9 +288,70 @@
 | 5.0 | 2 | 24.71 | 100.0 |
 | 5.0 | 3 | 273.25 | 0.7 |
 
+## DB 尺寸 scaling（orig 100MB vs 1gb,6M row ~1 GiB）— size sensitivity
+
+> 為回答「**當 DB 遠大於 hot working set 時,prefetch 還靈不靈**」,新建 `test_db_1gb.db`
+> (6,000,000 row、263,991 page、~1 GiB、`classify_1gb.csv`),與 100MB `orig`(600k row)用
+> **同一份 seed-1 query stream** 跑全 matrix(4 workload × 6 策略 × pread/async + 4 baseline,
+> **全 cell `cold_pct`=0**)。來源 [`results/size_1gb/`](results/size_1gb/summary.csv)。
+> ℹ️ 此處 seed-1 query stream **就是原始 100MB 的 master workload**(原始檔 renamed 成 `workload_*_1.txt`,
+> 日期 2026-05-23;`results/seeds/seed01` 跑這份 orig 的數字與上方 master 表幾乎一致 → 證實同源)。
+> 本節 orig 與 1gb 在**同一批次、rep-major 交錯**量測,是原始 workload 上的 apples-to-apples 尺寸比較。
+> ⚠️ **但本批次跑在較快的機器狀態**:machine-independent 的 `2f_slru` first-query 全格落在 **88–98µs**
+> (標準值 ~122–130µs,見 cross-seed 機器穩定性註),故本節**絕對 fq 系統性比 master/seed01 低約 25%**。
+> 此偏移在 orig 與 1gb 上一致 → **尺寸比較(orig↔1gb)有效**,但**絕對 µs 勿與 master/cross-seed 表逐格對齊**;
+> 100MB 參考請用本節 `orig` 列。cell = async first-query µs(括號 impr% 相對該 (workload,layout) baseline)。
+
+### Workload A（Zipfian）
+
+| layout | baseline | layers_5 | layers_92 | 2d | 2e_K10 | 2e_K500 | 2f_slru |
+|---|--:|--:|--:|--:|--:|--:|--:|
+| orig | 487 | 380 (−22%) | 399 (−18%) | 359 (−26%) | 357 (−27%) | 180 (−63%) | 96 (−80%) |
+| 1gb | 550 | 459 (−17%) | 456 (−17%) | 288 (−48%) | 288 (−48%) | 151 (−72%) | 98 (−82%) |
+
+### Workload B（Uniform）
+
+| layout | baseline | layers_5 | layers_92 | 2d | 2e_K10 | 2e_K500 | 2f_slru |
+|---|--:|--:|--:|--:|--:|--:|--:|
+| orig | 735 | 404 (−45%) | 405 (−45%) | 406 (−45%) | 404 (−45%) | 451 (−39%) | 96 (−87%) |
+| 1gb | 722 | 483 (−33%) | 482 (−33%) | 318 (−56%) | 314 (−56%) | 394 (−45%) | 98 (−86%) |
+
+### Workload C（窄域 5×）
+
+| layout | baseline | layers_5 | layers_92 | 2d | 2e_K10 | 2e_K500 | 2f_slru |
+|---|--:|--:|--:|--:|--:|--:|--:|
+| orig | 1041 | 1032 (−1%) | 654 (−37%) | 650 (−38%) | 176 (−83%) | 174 (−83%) | 88 (−92%) |
+| 1gb | 711 | 639 (−10%) | 476 (−33%) | 308 (−57%) | 143 (−80%) | 144 (−80%) | 91 (−87%) |
+
+### Workload Z（低 key Zipf）
+
+| layout | baseline | layers_5 | layers_92 | 2d | 2e_K10 | 2e_K500 | 2f_slru |
+|---|--:|--:|--:|--:|--:|--:|--:|
+| orig | 499 | 379 (−24%) | 352 (−29%) | 378 (−24%) | 173 (−65%) | 174 (−65%) | 88 (−82%) |
+| 1gb | 546 | 453 (−17%) | 451 (−17%) | 281 (−48%) | 142 (−74%) | 144 (−74%) | 90 (−83%) |
+
+### 2f_slru：first-q vs deliver/e2e（resident-set 隨 DB 變大）
+
+> deliver = async 逐頁 fadvise 的耗時;e2e_warm = deliver+fq(warm-process,本研究主張)。resident pages = 跑完該 seed-1 workload 後常駐的 working-set 頁數(2f hotset 大小)。
+
+| workload×layout | resident pages | fq | deliver | e2e_warm | e2e_warm vs base |
+|---|--:|--:|--:|--:|--:|
+| A/orig | 4416 | 96 | 7058 | 7152 | 14.7× |
+| A/1gb | 4448 | 98 | 7004 | 7100 | 12.9× |
+| B/orig | 4420 | 96 | 7000 | 7096 | 9.7× |
+| B/1gb | 4452 | 98 | 7039 | 7139 | 9.9× |
+| C/orig | 483 | 88 | 800 | 888 | 0.9× |
+| C/1gb | 984 | 91 | 1706 | 1798 | 2.5× |
+| Z/orig | 112 | 88 | 185 | 273 | 0.5× |
+| Z/1gb | 144 | 90 | 222 | 313 | 0.6× |
+
+**讀法**:① **first-query 上 prefetch 的效益在 1GB 守得住、小 hotset 策略甚至放大**——`2f_slru` 兩尺寸都收斂到 ~96–98µs(−80~87%),first-query 只看 hot working set、與 DB 大小無關;`2d` / `2e_K10` 在 A/B/Z 於 1GB 反而改善更大(A 2d −26%→−48%、B 2d −45%→−56%、Z 2d −24%→−48%),因為**同一批 hot key 散到 6M-row DB 的更多 page,no-prefetch baseline 的冷讀更分散更貴,targeted prefetch 相對更划算**。② **e2e_warm(部署指標)上 2f 的 deliver 成本跟著 resident-set、不是 DB 大小走**:A/B 的 working set ~4.4k page 兩尺寸幾乎不變 → deliver ~7ms 不變 → e2e_warm 仍 ~10–15× baseline 慘輸;但 **C 是警訊**——resident set 483→**984** page 翻倍(窄域 key 在大 DB 散得更開)→ deliver 800→1706µs → e2e_warm 0.9×→**2.5× baseline**,C 在 100MB 是 2f 唯一能贏的格,到 1GB 也由贏轉輸。③ `layers_5/92`(固定 5/92 interior page)結構派與 working-set 無關,跨尺寸 deliver 幾乎不變。④ C baseline 在 1gb 反而較低(1041→711)屬 first-query 落點雜訊,不影響相對排序。**結論:targeted prefetch 的 first-query 優勢 size-robust;2f 的 e2e 陷阱在窄域 workload 會隨 DB 變大而惡化。**
+
 ## 資料來源
 
 - 主矩陣:[`results/main/summary.csv`](results/main/summary.csv)、Z:[`results/z/`](results/z/summary.csv)
+- DB 尺寸 scaling(orig vs 1gb,seed-1):[`results/size_1gb/`](results/size_1gb/summary.csv)
+- DB 尺寸 × 跨-seed(1gb,A/B/C × 10 seed):[`results/seeds_1gb/`](results/seeds_1gb/) → [`results/stats/uncertainty_1gb.csv`](results/stats/uncertainty_1gb.csv)(腳本 `tools/run_seed_sweep_1gb.sh` + `tools/stats_uncertainty.py`)
 - N-sweep:[`results/nsweep_dense/`](results/nsweep_dense/summary.csv)、K-sweep:[`results/ksweep/`](results/ksweep/summary.csv)
 - RAM 20M:[`results/ram20m/`](results/ram20m/summary.csv)、churn:[`results/churn/`](results/churn/)、cadence:[`results/cadence/`](results/cadence/cadence_results.csv)
 - 凍結清單:[`results/main/hotset_freeze.sha256`](results/main/hotset_freeze.sha256)。完整執行覆蓋見 [IMPLEMENTATION_PIPELINES.md §3.8](IMPLEMENTATION_PIPELINES.md)。
@@ -424,3 +485,69 @@ directional=CI 跨 0 但 ≥7/10 同號；tie=否則）。完整 54-cell×3-metr
 | ta | C | 2e_K10 | -77.31 | [-78.39, -76.29] | 10/10 | robust |
 | ta | C | 2e_K500 | -77.09 | [-78.16, -76.1] | 10/10 | robust |
 | ta | C | 2f_slru | -86.9 | [-87.49, -86.34] | 10/10 | robust |
+
+
+## DB 尺寸 × 跨-seed 不確定性（orig 100MB vs 1gb,各 10 seed）— R3 size × uncertainty
+
+把上面的跨-seed 不確定性方法**原封不動套到 1gb**:A/B/C 各 10 seed 重跑 1gb full matrix
+(`results/seeds_1gb/`),per-seed 效應 = 同 seed 內 strategy vs baseline 的 Δ%,報跨 10 seed 的
+**mean、bootstrap 95% CI、符號一致性、verdict**。因為效應是「同 seed 相對量」,先前那個機器狀態偏移
+**自動消掉**(本 sweep 的 machine anchor `2f_slru` first-q 跨 10 seed 維持 **98.4–100.2µs**,內部穩定)。
+orig 欄取自已 commit 的 [`results/stats/uncertainty.csv`](results/stats/uncertainty.csv),1gb 欄取自
+[`results/stats/uncertainty_1gb.csv`](results/stats/uncertainty_1gb.csv);格式 `meanΔ% [95% CI] 符號 verdict`。
+> ⚠ 欄 = orig 與 1gb 的**方向/verdict 不同**(非雜訊,下方逐項說明);✓ = 兩尺寸同向且都非 tie。
+
+### first-query latency（async)— prefetch 對冷啟動的效益
+
+| wl | strategy | orig (100MB) | 1gb | size 一致? |
+|---|---|---|---|:--:|
+| A | layers_5 | −13% [−24,−3] 8/10 robust | −17% [−23,−11] 10/10 robust | ✓ |
+| A | layers_92 | −36% [−40,−31] 10/10 robust | −31% [−32,−27] 10/10 robust | ✓ |
+| A | 2d | −35% [−39,−31] 10/10 robust | −55% [−56,−53] 10/10 robust | ✓ |
+| A | 2e_K10 | −48% [−61,−36] 10/10 robust | −61% [−69,−55] 10/10 robust | ✓ |
+| A | 2e_K500 | −18% [−59,+49] 9/10 **directional** | −66% [−73,−60] 10/10 **robust** | ✓ |
+| A | 2f_slru | −85% [−86,−83] 10/10 robust | −86% [−86,−85] 10/10 robust | ✓ |
+| B | layers_5 | −9% [−19,−1] 7/10 robust | −15% [−22,−11] 10/10 robust | ✓ |
+| B | layers_92 | −35% [−41,−26] 9/10 robust | −31% [−34,−26] 10/10 robust | ✓ |
+| B | 2d | −35% [−41,−27] 10/10 robust | −55% [−57,−52] 10/10 robust | ✓ |
+| B | 2e_K10 | −36% [−41,−28] 10/10 robust | −55% [−57,−52] 10/10 robust | ✓ |
+| B | 2e_K500 | −53% [−65,−41] 10/10 robust | −64% [−71,−57] 10/10 robust | ✓ |
+| B | 2f_slru | −86% [−87,−84] 10/10 robust | −86% [−86,−85] 10/10 robust | ✓ |
+| C | layers_5 | −2% [−4,−1] 9/10 robust | −11% [−11,−10] 10/10 robust | ✓ |
+| C | layers_92 | −41% [−43,−39] 10/10 robust | −22% [−29,−15] 10/10 robust | ✓ |
+| C | 2d | −43% [−46,−40] 10/10 robust | −57% [−57,−57] 10/10 robust | ✓ |
+| C | 2e_K10 | −79% [−80,−78] 10/10 robust | −80% [−80,−80] 10/10 robust | ✓ |
+| C | 2e_K500 | −79% [−80,−78] 10/10 robust | −80% [−80,−79] 10/10 robust | ✓ |
+| C | 2f_slru | −88% [−88,−87] 10/10 robust | −87% [−87,−87] 10/10 robust | ✓ |
+
+**18/18 方向一致**,且 1gb 全部 `robust`。**prefetch 的冷啟動 first-query 優勢完全 size-robust**:符號全部一致、CI 都不跨 0;`2e_K500/A` 甚至從 orig 的 `directional`(CI [−59,+49] 跨 0)在 1gb 收成 `robust`——**大 DB 讓效應更乾淨**。小 hotset 的 `2d`/`2e_K10` 在 1gb 改善幅度更大(A 2d −35%→−55%、B 2e_K10 −36%→−55%),CI 仍緊。
+
+### warm-process e2e（async)— 本研究主張的部署指標
+
+| wl | strategy | orig (100MB) | 1gb | size 一致? |
+|---|---|---|---|:--:|
+| A | layers_5 | −5% [−16,+4] 6/10 tie | −7% [−13,−1] 7/10 robust | ⚠ |
+| A | layers_92 | −12% [−18,−6] 9/10 robust | −1% [−4,+4] 9/10 directional | ✓ |
+| A | 2d | −25% [−29,−20] 10/10 robust | −42% [−43,−39] 10/10 robust | ✓ |
+| A | 2e_K10 | −36% [−50,−23] 10/10 robust | −47% [−55,−39] 10/10 robust | ✓ |
+| A | 2e_K500 | +79% [+37,+141] 10/10 robust | +47% [+40,+55] 10/10 robust | ✓ |
+| A | 2f_slru | +744% [+662,+870] 10/10 robust | +930% [+894,+993] 10/10 robust | ✓ |
+| B | layers_5 | −1% [−12,+7] 8/10 directional | −5% [−12,−1] 10/10 robust | ✓ |
+| B | layers_92 | −13% [−20,−2] 9/10 robust | −2% [−6,+5] 9/10 directional | ✓ |
+| B | 2d | −25% [−32,−16] 9/10 robust | −42% [−45,−38] 10/10 robust | ✓ |
+| B | 2e_K10 | −25% [−30,−16] 9/10 robust | −41% [−43,−37] 10/10 robust | ✓ |
+| B | 2e_K500 | +40% [+24,+55] 10/10 robust | +47% [+39,+56] 10/10 robust | ✓ |
+| B | 2f_slru | +704% [+632,+799] 10/10 robust | +917% [+881,+979] 10/10 robust | ✓ |
+| C | layers_5 | +5% [+4,+6] 10/10 robust | −1% [−1,−1] 9/10 robust | ⚠ |
+| C | layers_92 | −21% [−22,−19] 10/10 robust | +7% [+0,+13] 5/10 robust | ⚠ |
+| C | 2d | −36% [−39,−33] 10/10 robust | −47% [−47,−46] 10/10 robust | ✓ |
+| C | 2e_K10 | −70% [−72,−69] 10/10 robust | −68% [−68,−68] 10/10 robust | ✓ |
+| C | 2e_K500 | −31% [−34,−27] 10/10 robust | +35% [+34,+37] 10/10 robust | ⚠ |
+| C | 2f_slru | −9% [−14,−4] 8/10 robust | +139% [+135,+143] 10/10 robust | ⚠ |
+
+**13/18 一致;5 個 ⚠ 全部集中在窄域 workload C**(以及 A/layers_5 那格其實是 orig=tie→1gb 變乾淨,非真矛盾)。原因一致:**C 的 working set 隨 DB 變大而膨脹**(resident set 483→984 page),deliver 成本翻倍,把幾個「靠少量 deliver 取勝」的策略由贏轉輸,且跨 10 seed `robust`(非雜訊):
+- **`2f_slru/C`:−9% → +139%**——100MB 唯一能讓 2f 在 e2e 取勝的格,到 1GB 確定變成大輸。
+- **`2e_K500/C`:−31% → +35%**、**`layers_92/C`:−21% → +7%**——同樣由贏轉小輸。
+- 對照:小 hotset 的 `2d`/`2e_K10` 兩尺寸 e2e 都穩贏(C 2e_K10 −70%/−68%),size-robust。
+
+**結論(對齊後)**:① **冷啟動 first-query 的效益 size-robust**——18/18 跨尺寸方向一致、1gb 全 robust。② **部署 e2e 的 size 敏感性集中在窄域 workload**:DB 變大會放大 working set→deliver,使 `2f_slru`/`2e_K500`/`layers_92` 在 C 由贏轉輸(robust);**小而準的 hotset(2d / 2e_K10)是唯一兩尺寸 e2e 都穩贏的策略**。

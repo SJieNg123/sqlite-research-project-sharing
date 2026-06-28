@@ -74,11 +74,13 @@ DBS = {
     "orig":   ROOT / "pipeline/preparation/layout_rewriter/runs/test.db",
     "vacuum": ROOT / "pipeline/preparation/layout_rewriter/runs/test_vacuum.db",
     "ta":     ROOT / "pipeline/preparation/layout_rewriter/runs/test_typeaware.db",
+    "1gb":    ROOT / "pipeline/preparation/layout_rewriter/runs/test_db_1gb.db",  # 6M-row ~1 GiB size-scaling variant of orig
 }
 CLASSIFY = {
     "orig":   ROOT / "pipeline/preparation/layout_rewriter/runs/classify_before.csv",
     "vacuum": ROOT / "pipeline/preparation/layout_rewriter/runs/classify_vacuum.csv",
     "ta":     ROOT / "pipeline/preparation/layout_rewriter/runs/classify_after.csv",
+    "1gb":    ROOT / "pipeline/preparation/layout_rewriter/runs/classify_1gb.csv",
 }
 WORKLOADS = {
     "A": ROOT / "workloads/workload_a.txt",
@@ -86,7 +88,7 @@ WORKLOADS = {
     "C": ROOT / "workloads/workload_c.txt",
     "Z": ROOT / "workloads/workload_z.txt",  # low-key Zipfian (robustness)
 }
-SLRU_SUFFIX = {"orig": "", "vacuum": "_vacuum", "ta": "_ta"}
+SLRU_SUFFIX = {"orig": "", "vacuum": "_vacuum", "ta": "_ta", "1gb": "_1gb"}
 
 # --seed N: run the whole matrix against the seed-N workload variants
 # (workloads/workload_<key>_<N>.txt) with per-seed outputs and per-seed hotset files,
