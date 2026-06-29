@@ -1,167 +1,151 @@
-# Editorial Decision — REPORT.md 同儕審查綜整
+# Editorial Decision — REPORT.md 同儕審查綜整（Round 2）
 
 > 由 academic-paper-reviewer skill（full mode）產生的模擬期刊審查編輯決定。
-> 五位審稿人（EIC + 方法學 R1 + 領域 R2 + 跨域/實務 R3 + Devil's Advocate）獨立審查 [REPORT.md](REPORT.md) 後，由編輯綜整。
-> 審查日期：2026-06-27 · Review Round 1 · 標準：PVLDB / FAST / SIGMOD / ATC / CIDR 級系統/DB venue。
+> 五位審稿人（EIC + 方法學 R1 + 領域 R2 + 跨域/實務 R3 + Devil's Advocate）**獨立**審查修訂後的 [REPORT.md](REPORT.md)（blind to Round 1）後，由編輯綜整。
+> 審查日期：2026-06-29 · **Review Round 2** · 標準：PVLDB / FAST / SIGMOD / ATC / CIDR 級系統/DB venue。
+> 註：Round 1 的決定與 roadmap 已存於 git history（本檔覆寫前的版本），其完成狀態已 carry forward 至下方「Revision Roadmap」。
 
 ---
 
-## TL;DR — 研究主題與方向
+## TL;DR — 這一輪的結論
 
-**方向是對的、niche 是真的、但「論文怎麼宣稱」越過了證據能撐的範圍。** 五位審稿人一致認為：
+**Round-1 的 gating CRITICAL（warm-process 會計撐起核心結論）已被解除。** Devil's Advocate 這次專門壓力測試該框架後**未開任何 CRITICAL**——「框架沒有造假，最強的格子（C × 2e_K10）經 10-seed robust 驗證為真」。
 
-- ✅ **題目站得住**：cold-start read path 確實被學界系統性忽略（連 SQLite 創始團隊的 Gaffney+22 都 `SELECT *` 預熱、把 cold-start 當 noise 排除）。
-- ✅ **真正貢獻是 cost-accounting framing**（揭露「2f first-q −76~89% 但 e2e 慢一個量級」這個工程陷阱）——五人一致稱讚，是可發表的核心。
-- ⚠️ **主線宣稱被一個會計選擇撐起**：「targeted prefetch 三 workload e2e 全贏」只在自選的 warm-process（不計 ~200µs cold open）下成立；改用 standalone，A/B 其實是輸的。**DA 與 R3 都評為 CRITICAL**。
-- ⚠️ **真正穩健的大勝只有一格**（C × 2e_K10）；A 的 −7~9% 落在自承的 30–70% 機器漂移內。
-- ⚠️ **通篇訴諸手機/IoT，零 mobile 證據**（全跑在一台桌機 NVMe）。
+- ✅ **三槓桿 ablation（§5.4.1）五人一致盛讚**：`leaf_rand` −2% vs `leaf_freq` −40%（同型別同張數）是教科書級 causal isolation，且主動修正「page-type-aware」命名。
+- ✅ **可重現性是真強項**：R1 獨立把所有 headline 數字、cross-seed CI、ablation、1gb、RAM、deliver_sweep 對回 CSV，**零 mismatch**。
+- ✅ **selection–delivery 拆解 + intermediate-delivery sweep（§3.5/§3.5.1）**被多位評為比 cost-accounting headline 本身更紮實。
+- ⚠️ **仍有一個會威脅結論的缺口需新實驗**：唯一被細測的 dump 對照 `2f_slru` 是 blind full-dump（strawman），缺 frequency-ranked **partial** dump 對照——「targeted 贏 dump」可能其實只是「ranked-partial 贏 unranked-full」。
+- ⚠️ **框架用詞仍偏滿**：「首個 end-to-end cost-accounting」、Abstract「三 workload 皆贏」掛未校正的單格 A/B 數字、Index Terms 仍以 page-type 領銜、mobile motivation 仍蓋過 desktop-only 證據。
 
 ---
 
 ## Decision
 
-### **Major Revision（大修，需重審）**
+### **Major Revision（大修）— focused / borderline-Minor**
 
-> 觸發 gating：Devil's Advocate C1 與 R3 W1 均評為 **CRITICAL**（warm-process 會計選擇撐起核心結論）。依審查紀律（DA CRITICAL → 不可 Accept），有 CRITICAL 未解前不可 Accept；但問題可由「重述框架 + 對稱呈現兩模型 + 收斂宣稱 + 補關鍵實驗」修復，故為 Major Revision 而非 Reject。
+> 觸發理由：**沒有任何 CRITICAL 存活**（DA 解除了 Round-1 gating；R2 的「首個」CRITICAL 可由 re-wording 化解，屬 Minor 級修法）。但有**一個會威脅結論的缺口需要新實驗**（competitive partial-dump baseline，R2 W2 + DA），再加上仍 open 的 ra-sweep，整體超出 Minor。其餘（收斂宣稱、Abstract 重平衡、framing 收斂）皆 text-level。核心貢獻 sound 且五人一致肯定——**這是通往 Accept 的短路徑，不是變相 Reject**。
 
 ---
 
 ## Reviewer Summary
 
-| Reviewer | 身分 | 建議 | 信心 | 加權分 |
-|---|---|---|---|---|
-| EIC | 儲存/DB 頂會主編 | Major | 4/5 | 66.0 |
-| R1 | 系統量測 / reproducibility | Major | 5/5 | 66.7 |
-| R2 | DB 儲存 / buffer management | Major | 5/5 | 70.0 |
-| R3 | OS-kernel-mm / 行動嵌入式 | Major | 4/5 | 65.7 |
-| Devil's Advocate | 核心論點挑戰 | （不可 Accept） | — | C1 = CRITICAL |
+| Reviewer | 身分 | 建議 | 信心 |
+|---|---|---|---|
+| EIC | 儲存/DB 頂會主編 | **Minor Revision** | 4/5 |
+| R1 | 系統量測 / reproducibility | **Minor Revision** | 5/5 |
+| R2 | DB 儲存 / buffer management | **Major Revision** | 4/5 |
+| R3 | OS-kernel-mm / 行動嵌入式 | **Minor Revision** | 4/5 |
+| Devil's Advocate | 核心論點挑戰 | **無 CRITICAL**（"oversold but core holds"） | — |
 
 各審稿人維度評分（0–100）：
 
-| Dimension | EIC | R1 | R2 | R3 |
-|---|---:|---:|---:|---:|
-| Originality | 66 | 80 | 62 | 74 |
-| Methodological Rigor | 70 | 62 | 78 | 66 |
-| Evidence Sufficiency | 64 | 64 | 70 | 60 |
-| Argument Coherence | 66 | 70 | 72 | 70 |
-| Writing Quality | 62 | 68 | 63 | 68 |
-| **Weighted** | **66.0** | **66.7** | **70.0** | **65.7** |
+| Dimension | EIC | R1 | R2 | R3 | 平均 |
+|---|---:|---:|---:|---:|---:|
+| Originality | 72 | 78 | 62 | 78 | **72.5** |
+| Methodological Rigor | 78 | 84 | 84 | 82 | **82.0** |
+| Evidence Sufficiency | 70 | 82 | 72 | 75 | **74.8** |
+| Argument Coherence | 80 | 80 | 80 | 84 | **81.0** |
+| Writing Quality | 62 | 70 | 70 | 70 | **68.0** |
 
 ---
 
 ## Consensus Analysis（共識分析）
 
-### Points of Agreement
+### Points of Agreement（強項，五人一致）
 
-**[CONSENSUS-5]**（五人全同意）
+1. **§5.4.1 三槓桿 ablation 是模範**：五人都點名其 causal isolation（`leaf_rand` 同型別同張數對照 −2% vs `leaf_freq` −40%）並肯定主動修正命名。（EIC S3 / R1 S1 / R2 S2 / R3 / DA Obs 1）
+2. **可重現性是真強項**：R1 逐格重算 headline / cross-seed CI / ablation / 1gb / RAM / deliver_sweep，**零 mismatch**。（R1 S1 / DA Obs 4）
+3. **selection–delivery 拆解 + intermediate-delivery sweep（§3.5/§3.5.1）**：可能比 cost-accounting headline 本身更站得住。（R1 S2 / R2 S3 / R3 S1 / DA Obs 3）
+4. **誠實面對負面結果與自我修正**：1c layout 標為探索性負面結果、§6.2.4 cross-seed 推翻單批 headline。（EIC S4/S5 / R2 S4 / DA Obs 2/5）
 
-1. **核心貢獻 = preprocessing cost-accounting framing**，確實補了 literature 空白；「2f first-q 最低卻 e2e 慢一個量級」是有教育價值、會被記住的發現。（EIC S3 / R1 S1 / R2 S1 / R3 S1 / DA Observations）
-2. **「三 workload e2e 全贏」的 headline 被 warm-process 會計假設撐起**：扣不扣那 ~200µs cold open 決定 A 的勝負號（+27% ↔ −9%）。論文一邊「主張 warm-process」、一邊用 warm-process 前提消掉 open 成本，構成 circular framing。（EIC W1/W4 / R1 W3 / R2 隱含 / **R3 W1 CRITICAL** / **DA C1 CRITICAL**）
-3. **真正穩健的大勝實質只有一格（C × 2e_K10, warm e2e −73%）**；A 是 ±7~9%、B 的 −29~34% 也只在 warm-process 成立。headline 寬度 > 證據寬度。（EIC W1 / R1 W1 / R2 隱含 / R3 / DA M1）
-4. **外部效度過窄、且 motivation↔evidence 不對齊**：通篇訴諸 mobile/IoT/「>1T databases」，但全部證據來自單台 x86 桌機 NVMe、單 kernel、單一 102MB 單表 schema、ra=128 單值。（EIC W3 / R1 W4 / R2 次要 / R3 W2+W4 / DA m2）
-5. **量測協定紀律與誠實報負面結果值得肯定**（drop-caches + mincore 雙驗 + majflt 驗證 + EPP 鎖頻 + hotset freeze；主動呈現 N=1 變慢、VACUUM 反效果）。（EIC S1 / R1 S3+S4 / R2 S4 / R3 S3 / DA Observations）
+### 多位審稿人共同點名（必須處理）
 
-**[CONSENSUS-3+]**（3 人以上）
+| 主題 | 嚴重度 | 來源 | 對應 roadmap |
+|---|---|---|---|
+| **「首個 end-to-end cost-accounting」over-claim** — 收斂為「OS-syscall 粒度的 open/deliver 拆解 + pread-oracle 隔離 delivery loss、於 SQLite cold-start」 | R2 **CRITICAL** W1 / EIC MAJOR / DA MINOR | 用詞修正 | （R5 復現） |
+| **2f_slru 是 strawman，缺 competitive baseline** — 需 frequency-ranked **partial** dump（`2f_topN`）；勝負是「targeted vs dump」還是只是「ranked-partial vs unranked-full」？ | R2 **MAJOR** W2 / DA alt-path / R1 implied | **新實驗** | **= open S4** |
+| **mobile motivation 仍蓋過 desktop-only 證據**（即便已做 R4 scoping） — 把 mobile 退為「motivating context」，敘事改以 commodity-NVMe / serverless 領銜 | R3 MAJOR / DA MAJOR / EIC MAJOR | reframing | （延伸 R4） |
+| **Abstract over-claim「三 workload 皆贏」+ 掛未校正單格 A/B 數字** — 改用 cross-seed CI、明標 A/B `layers_5` 為 tie/directional | DA MAJOR / R1 implied / EIC | abstract 重寫 | — |
+| **page-type branding（Index Terms/§1）與 ablation 結論衝突** — access-frequency 提到同等地位 | R2 MAJOR W3 / DA MINOR | reframing | （延伸 S1） |
+| **`ra=128` 單值** — 掃 {0,64,512} 關鍵 cell，否則把「readahead 養熱」gap 解釋降為未驗證 conjecture | R3 MAJOR | 小實驗 / scope | **= open S2** |
+| **寫作**：中英 code-switch 過密、Abstract 單段、typo（「走full條 path」） | EIC/R1/R2/R3 全 MINOR | 潤飾 | — |
 
-6. **小效應落在自承雜訊內**：30–70% 跨 session 漂移 + 明言「未做正式檢定」，A −7~9%（~40µs）與 batch noise（~5%≈26µs）同量級，違反論文 §3.7 自訂「落在雜訊內不宣稱排名」的標準。（R1 W1/W2 主責 / DA M2 / EIC 指派 R1 / R3 W1 呼應）
-7. **novelty「first」過度宣稱**：InnoDB dump/load、Yi+26、Chen+21 都已觸及 prefetch 成本；真正可辯護的 novelty 較窄。（EIC W1 / R2 W2+W3 / DA M3）
-8. **寫作**：中英混排密度過高、兩個部署模型定義重複多處、標題過於通用未傳達 selling point。（EIC / R1 / R2 / R3 全提）
+### Points of Disagreement（整體嚴重度）
 
-**[CONSENSUS-2]**
+- **R2**：Major（novelty + competitive baseline 是 DB-storage 領域不可放行的核心缺口）。
+- **EIC / R1 / R3**：Minor（皆可由收斂宣稱 + 一兩個實驗修補）。
+- **DA**：無 CRITICAL，「core holds but oversold」。
 
-9. **「page-type-aware」混淆了 layout 與 selection 兩個槓桿**：最佳結果（C 2e_K10）其實由 access-frequency 選熱 leaf 驅動，非 page-type；需 ablation 分離。（R2 W4 主責 / R3 呼應）
-10. **「interior=0.35%」是 B+tree 教科書常識，非發現**；應降溫，把機制工作提為 headline。（R2 W3 / DA m1）
-
-### Points of Disagreement
-
-**Disagreement 1：warm-process 會計問題的嚴重度**
-- **R3 + DA**：CRITICAL —— 「用結論挑有利會計口徑」，gating。
-- **EIC + R1 + R2**：Major —— 合法 scoping，但須對稱呈現、補部署普遍性論證。
-- **類型**：Severity disagreement。
-- **編輯裁決**：依保守原則 + IRON RULE，**採 CRITICAL-gating**（不可 Accept），但認定可由重述修復 → 整體 Major Revision。理由：R1 提出的技術精修使這點無可迴避（見 Disagreement 2），且兩位資深審稿人獨立評為 CRITICAL。
-
-**Disagreement 2：warm-process 模型內，−7~9% 的勝負來源**
-- **EIC / R3 / DA**：把勝負歸因於「省掉那次 cold open」。
-- **R1（技術精修）**：**歸因錯置**。warm-process 下 baseline 與 prefetch 都不含 open，故 warm 模型內 prefetch vs baseline 的勝負 = `fq 改善 − deliver`，與 open 無關；open 只決定 warm vs standalone 兩模型之差。
-- **類型**：Direction / 機制歸因 disagreement。
-- **編輯裁決**：**R1 正確**（信心 5/5、屬其專長）。論文 §5.2/§5.5.3/§6.1 多處「差別就是那一次 cold open」在 warm 模型內是錯的。作者須：(a) 明確區分「warm vs std 之差 = open」與「warm 內勝負 = fq−deliver」；(b) 兩模型對稱呈現。此裁決同時強化 Disagreement 1 的 gating 性質。
-
-**Disagreement 3：論文主軸該擺哪**
-- **EIC**：把 C3 cost-accounting 提為唯一主軸。
-- **DA**：2f 的「first-q 最低但 e2e 輸」在兩模型下方向一致（更穩健），比 targeted 的勝利更該當主軸。
-- **類型**：Perspective difference。
-- **編輯裁決**：兩者相容 —— 主軸定為 **cost-accounting framing**，而 **2f 反差**作為該 framing 下最穩健的證據範例（不依賴會計口徑），targeted 的勝利則誠實收斂到 robust 的格子。
+**編輯裁決**：R2 的 W1「首個」CRITICAL **可由 re-wording 化解**（→ Minor 級），故不單獨構成 Major。但 R2 W2（competitive baseline）與 R3 ra-sweep 都需新跑，且 competitive-baseline 缺口**會威脅結論**（最懂這條軸的 R2 以 4/5 信心評為 Major）。據此整體定為 **focused Major**。核心貢獻 sound 且五人一致肯定，通往 Accept 的路徑清楚而短。
 
 ---
 
 ## Decision Rationale
 
-本文題目與方向獲五位審稿人一致肯定：cold-start read path 是被學界系統性忽略的真實 niche（EIC S1 用 Gaffney+22 的 `SELECT *` 預熱釘死此點），而 preprocessing cost-accounting framing 是真正補空白、且有跨子社群方法論警示價值的貢獻（CONSENSUS-5 #1）。量測紀律亦達 strong 水準（CONSENSUS-5 #5）。因此這不是一篇方向有問題的論文，而是一篇**宣稱超出證據**的論文。
+本輪相對 Round 1 有實質進步：**Round-1 的雙 CRITICAL（warm-process 會計撐起結論）已解除**——DA 專門針對此點壓力測試，結論是「框架沒有造假；即使只看 baseline 對稱、cross-seed robust 的最保守證據，C × 2e_K10 的勝利仍為真（−70% [−72,−69]、10/10 seed）」。量測紀律、可重現性、ablation 的自我修正皆達 strong 水準（維度均分 Rigor 82 / Coherence 81）。
 
-不能 Accept 的關鍵在於 CONSENSUS-5 #2 / Disagreement 1：核心 headline「targeted prefetch 三 workload e2e 全贏」由作者自選的 warm-process 會計口徑撐起，改用其自己列為合法的 standalone 模型，A/B 即翻為輸（EIC W1、R3 W1-CRITICAL、DA C1-CRITICAL）。R1 進一步證明論文對此勝負的歸因本身有誤（Disagreement 2）。疊加小效應落在自承雜訊內（CONSENSUS #6）、真正穩健大勝僅一格（#3）、mobile 宣稱零 mobile 證據（#4）、novelty「first」過廣（#7），這些都是結構性、需新分析與重述、而非潤飾的問題。
+不能直接接收的關鍵：**唯一被細測的 dump 對照（2f_slru）是未經調校的 blind full-dump**。R2（W2）與 DA（替代路徑）獨立指出：2f 之所以 e2e 輸，是因為它 deliver 了整份 working set（~4.4k page）而非像 2e_K10 只 deliver ~14–28 page——這是「dump 多少」的差，非「dump 機制 vs targeted 機制」的本質差；而 2e_K10 本身就是一種 frequency-ranked partial dump。若一個 `dump_pct` 調得當的 partial dump 與 2e_K10 打平，mechanism novelty 即蒸發。這需要**新實驗**（`2f_topN`），故超出 Minor。
 
-選 Major 而非 Reject：所有問題都可由「框架重述 + 兩模型對稱 + 宣稱收斂 + 補一兩個關鍵實驗」修復，核心貢獻不需推翻。選 Major 而非 Minor：涉及 CRITICAL gating + 需新實驗（ablation、ra sweep、cap<working-set、ARM sanity）。
+選 Major 而非 Reject：核心貢獻不需推翻，五人一致肯定；缺口可由「一個 competitive baseline 實驗 + 收斂宣稱 + Abstract/ framing 紀律」修補。選 Major 而非 Minor：涉及一個會威脅結論的新實驗（RR1 = S4）+ 仍 open 的 ra-sweep（SR1 = S2）。
 
 ---
 
 ## Required Revisions（必改）
 
-| # | 修訂項 | 來源 | 嚴重度 | 章節 | 估時 |
-|---|---|---|---|---|---|
-| **R1** | **對稱呈現兩個部署模型**：Abstract/§8 headline 不得只用 warm-process；兩模型並陳，或以 standalone 為主口徑。明確論證 warm-process 普遍性（引用 app lifecycle 證據），並標明哪些 motivation 場景屬 warm、哪些屬 standalone（休眠喚醒/被 LMK 殺後重啟其實接近 standalone） | DA C1 / R3 W1 / EIC W1+W4 | **Critical** | Abstract, §3.4, §5.5, §8 | 5–8 天 |
-| **R2** | **修正 warm 模型內歸因**：區分「warm vs std 之差 = open」與「warm 內 prefetch vs baseline 勝負 = fq − deliver」；改寫 §5.2/§5.5.3/§6.1 | R1 W3 | **Critical** | §5.2, §5.5.3, §6.1 | 1–2 天 |
-| **R3** | **收斂貢獻寬度 + 補不確定性**：對每個被宣稱的勝負報配對差離散度（IQR / bootstrap CI / paired Wilcoxon）；凡 \|效應\|≲ batch noise（A −7~9%）改述「打平/方向性傾向」，與 §3.7 自訂標準自洽 | R1 W1+W2 / DA M2 / EIC | **Major** | §3.7, §5.2, §5.5.2, §6.3 | 5–7 天 |
-| **R4** | **對齊 mobile 宣稱與證據**：二擇一 ——(a) 補一台 ARM/UFS SBC 跑 A/C × {baseline, 2e_K10} 關鍵 cell；或 (b) 全面把 claim scope 收到「commodity desktop NVMe」，標題/摘要據此定錨 | EIC W3 / R3 W2 | **Major** | Abstract, §1, §3.6, §6.4 | (a) 1–2 週 / (b) 2 天 |
-| **R5** | **收斂 novelty 宣稱**：把「first to bring preprocessing into e2e」改為帶 scope 的窄宣稱；明確相對 InnoDB dump/load、Yi+26、clustering/`CLUSTER`/IOT 傳統定位 layout rewriter | EIC W1 / R2 W2+W3 / DA M3 | **Major** | Abstract, §1 C3, §2.3.2, §4.1 | 3–4 天 |
+| # | 修訂項 | 來源 | 嚴重度 | 需要 |
+|---|---|---|---|---|
+| **RR1** | **補 competitive frequency-ranked partial-dump baseline**（`2f_topN`，N∈{14,28,100,500}）置於同一 e2e accounting。證明 `2e_K10` 是否仍勝過 tuned partial dump；若打平，把貢獻重定位為「cost-accounting 方法學 + partial-dump frequency sweet-spot 量化」 | R2 W2 / DA | **Major** | 新實驗 **(= S4)** |
+| **RR2** | **收斂「首個」novelty 宣稱**（Abstract/§1-C3/§8）為 syscall 粒度 + pread-oracle framing；把 §2.3.2「差異在粒度、非是否意識到成本」提升為 contribution 主述句 | R2 W1(CRIT) / EIC / DA | Major→ 用詞 | text |
+| **RR3** | **Abstract 重平衡**：單格 A/B 數字改為 cross-seed CI；明標 structural `layers_5` 在 A/B 為 tie/directional；cost-accounting finding 前置為 headline；拆解超長單段 | DA / R1 / EIC | Major | text |
+| **RR4** | **framing 收斂到 commodity-NVMe / serverless**：Abstract 首句與 §1 明確把 mobile/IoT 定位為「motivating context、非 evaluated platform」；§2.3.3 改框為與 read-path 正交的 write-path lineage | R3 / DA / EIC | Major | text |
+| **RR5** | **access-frequency 提到與 page-type 同等地位**（Index Terms / §1），與 §5.4.1 結論一致 | R2 W3 / DA | Major | text |
 
 ---
 
 ## Suggested Revisions（建議改）
 
-| # | 修訂項 | 來源 | 優先 | 章節 |
-|---|---|---|---|---|
-| S1 | **加 ablation 分離三槓桿**：(i) layout clustering、(ii) 原 layout 上的 page-type selection、(iii) access-pattern leaf selection；說明各 workload 由哪個主導（最佳 C 結果其實是 leaf-frequency 驅動） | R2 W4 | P2 | §5 新節 |
-| S2 | **ra 不再單值**：補 ra∈{64,128,512} spot-check（sysfs 寫權限或同類 setuid wrapper，不必 root）；否則明確把所有 async 結論 scope 到 ra=128 | R1 W4 / R3 W4 | P2 | §3.5, §6.4 |
-| S3 | **修 RAM-pressure 軸**：cap 設到顯著低於 working set（4M/8M/12M ladder），用 mincore 量 first-query 前 prefetch 過的 interior 殘留率（cgroup v2 `memory.max` + `memory.stat`） | R3 W3 | P2 | §6.2.2 |
-| S4 | **補競爭 baseline 對拼**：在「同樣計入 preprocessing」下，把 Yi+26 hotspot 選擇或認真調校的 dump/load 移植對拼，證明 2f 非稻草人 | EIC W2 | P2 | §5 |
-| S5 | **補中間 delivery 點**：測 `readahead(2)` 或「madvise + 固定 sleep」中間點，量 fq_async 逼近 fq_pread 的程度（現 delivery loss 可能被 harness 緊湊時序高估） | R3 W5 | P3 | §3.5 |
-| S6 | **補/修引用**：補上 dangling 的 [Yang+20 Leaper]（其 uniform 零加速 = 本文 B workload ceiling 的最近類比）、CacheLib（cache admission）、LeanStore；§2.3.1 的「候選 reading」改為正式引用或刪除 | R2 W1 | P2 | §2.3, §9.2 |
-| S7 | **降溫「0.35%」**：從「關鍵 observation」降為「已知 B+tree 結構事實」，一句 fanout 算術即可化解 | R2 W3 / DA m1 | P3 | Abstract, §1, §2.1 |
-| S8 | **澄清 layout rewriter（1c）淨價值**：§6.1 自承 1c 把 A/B baseline 推高，明確給 1c 的 net-win 條件，或誠實降級為探索性負面結果 | EIC W5 / DA m4 | P3 | §4.1, §6.1 |
+| # | 修訂項 | 來源 | 優先 |
+|---|---|---|---|
+| SR1 | `ra` 掃 {0,64,512} 於 A `layers_5` / C `2e_K10`，否則把「readahead 養熱」gap 解釋降為 labeled conjecture | R3 **(= open S2)** | P2 |
+| SR2 | 補強 §3.7 統計：報 bootstrap resample 次數、CI type（BCa vs percentile 及其 n=10 侷限）、加 sign-test/Wilcoxon sanity check | R1 | P2 |
+| SR3 | 報 `open_us` 變異（p95/stdev）；加一列「baseline+open」的 standalone，呈現 open 是 common-mode 還是 prefetch-only | R1 / DA | P2 |
+| SR4 | 把 workload C 的 RAM-robustness 標為**演繹**（WS < 量測下限），或構造放大-WS 的 C 變體取得真 sub-WS datapoint | R3 | P2 |
+| SR5 | §2.1：「所有 interior 必須駐留」改為「單筆 query 需 root→leaf path 的 interior（≈ tree height）；累積則需 working-set 內的 interior 子集」 | R2 W5 | P3 |
+| SR6 | §3.4：明述 hotset-generation 是 offline/amortized（引 §6.2.1 churn 不 decay），避免被質疑藏了 access-pattern 策略最貴一步 | R2 W6 / DA | P3 |
+| SR7 | 寫作潤飾：降中英混雜密度、修 `full`/`shared` find-replace typo、加「如何讀 e2e 表」3 行 reader's guide | 全體 | P3 |
+| SR8 | 修 figure-6 caption（unlimited 分母 = 同 session、非 results/main）；註明 deliver_sweep/§3.5.1 baseline 屬不同批；suppress 近零分母的 recovery% | R1 / R3 | P3 |
 
 ---
 
 ## Revision Roadmap
 
-### Priority 1 — 結構性（必改，~2 週）
-- [x] R1 兩模型對稱 + warm-process 普遍性論證 + motivation 場景歸類
-- [x] R2 修正 warm 模型內歸因
-- [x] R3 補不確定性 + 收斂小效應宣稱 — **10-seed workload-sensitivity sweep**(同 DB、10 條不同抽樣的 A/B/C × full matrix)，每格報 bootstrap 95% CI + 符號一致性 + verdict。結論：access-pattern targeted prefetch 三 workload warm e2e 皆 robust(A 2e_K10 −36%[−50,−23]、B 2d −25%、C 2e_K10 −70%[−72,−69]、CI 皆不跨 0)；structural layers_5 在 A/B 落雜訊內(A tie、B directional)。新 §3.7 方法 + §6.2.4 結果 + overall_results.md 全表；`tools/{gen_workload,stats_uncertainty}.py` + `results/seeds/`。
-- [x] R5 收斂 novelty「first」+ 定位 layout rewriter 於 clustering 傳統
+### Round 2 — 本輪必改/建議
+- [ ] RR1 競爭性 partial-dump baseline（`2f_topN`）— **= open S4**，需新實驗
+- [ ] RR2 收斂「首個」novelty 用詞
+- [ ] RR3 Abstract 重平衡（cross-seed CI + 標 layers_5 不 robust + 拆段）
+- [ ] RR4 framing 收斂到 commodity-NVMe / serverless、mobile 退為 motivation
+- [ ] RR5 Index Terms / §1 提升 access-frequency 至同等
+- [ ] SR1 ra-sweep — **= open S2**
+- [ ] SR2 §3.7 bootstrap CI 方法補強
+- [ ] SR3 open_us 變異 + standalone「baseline+open」列
+- [ ] SR4 C 的 RAM-robustness 標為演繹 / 補放大-WS datapoint
+- [ ] SR5 §2.1 interior 駐留表述修正
+- [ ] SR6 §3.4 hotset-generation amortized 界定
+- [ ] SR7 寫作潤飾 + reader's guide
+- [ ] SR8 figure-6 caption + 跨批 baseline 註記 + 近零分母 suppress
 
-### Priority 2 — 內容補充（~1–2 週）
-- [x] R4 ARM sanity check 或全面 scope 到 desktop — **採出路 (b):全面把實證宣稱 scope 收到「commodity x86 桌機 + NVMe」**。Abstract 末加明確「範圍界定」句(量測僅在 Ryzen 9950X + NVMe 單 kernel;mobile/IoT 為部署背景與 motivation、未在 ARM/UFS/eMMC 量測,絕對數字與相對排序不外推);§3.6 把「單機」bullet 強化為「平台 scope = commodity desktop NVMe + mobile storage stack 差異(UFS/eMMC latency、ra 預設、ARM page size、RAM)→不外推」;§6.4 把「Single-machine」bullet 換成完整「Platform scope」段(含 ARM/UFS SBC 重跑 A/C×{baseline,2e_K10} 為直接 future work);§6.2.2 RAM-pressure 改述為「桌機 cgroup 模擬施壓、非實機」。標題早已 cost-accounting 定錨、無 mobile 宣稱。mobile motivation(§1 ubiquity)與 related-work(§2.3.3)保留。
-- [x] S1 三槓桿 ablation — **拆 2e_K 為 (ii)page-type / (iii)access-frequency 兩槓桿 + 對照組**（`leaf_freq_K`＝只熱 leaf、`leaf_rand_K`＝同型別同張數隨機非熱 leaf；集合上 `2e_K = 2d ∪ leaf_freq_K`，exact 分解）。10-seed bootstrap CI（A/B/C × orig+ta，`tools/ablation_levers.sh` → `results/{ablation,ablation_k500}/`）。**結論坐實 R2:C 的 headline 是 access-frequency 驅動、非 page-type**——C orig first-q：`leaf_rand` −2%[−3,−1]（對照、無效）vs `leaf_freq` −40%[−43,−37]，同 page-type/同張數,38 點全是頻率訊號;−81% = interior(2d −43%)＋熱 leaf 疊加。對稱面:**B(uniform)leaf_freq≈leaf_rand≈0、全靠 2d(interior −36%)**;A 居中(leaf_freq −13% robust,主力 2d −37%)。layout 槓桿只改 deliver 不改 selection。**命名校正為「type-aware(interior)＋access-frequency-aware(hot leaf) 複合 targeting」**。新 §5.4.1 + 圖 17 + overall_results.md「三槓桿 ablation」節 + `tools/{ablation_levers.sh,ablation_table.py}`。
-- [ ] S2 ra sweep
-- [x] S3 真 RAM pressure（cap < working set）— **sub-WS sweep**（`tools/ram_pressure.sh`、cap `{∞,16,12,8,6}M` = `{∞,.92,.69,.46,.35}×WS`，量 `delivery_pct`＝prefetch 殘留率）。發現：**targeted（2e_K10 112KB / 2e_K500 2MB）delivery 全程 100%、first-q 全程平 → RAM-robust by construction；2f_slru（dump=17.7MB=整個WS）delivery 隨 cap 線性塌（100→77→54→32→19%）、first-q 一跌破 100% 就直跳回 baseline（all-or-nothing）**。可量測下限 ~6M；C(WS 1.8MB)天生不敏感。新 §6.2.2 改寫 + 圖 16 + overall_results.md。
-- [ ] S4 競爭 baseline 對拼
-- [x] S6 補/修引用 — Yang+20 Leaper、CacheLib [Berg+20]、LeanStore [Leis+18] 經查**早已正式引用＋列入 §9.2**(body §2.3.2/§2.3.5 + 參考表),非 dangling;Leaper 在 §2.3.2 已對照本文 Workload B uniform ceiling。**修一處 citation 錯誤**:Leaper title 被 term_sweep 誤改的「Cache In驗證」還原為「Cache Invalidation」。**處理 §2.3.1「候選 reading」**:把其中唯一的真論文 anticipatory scheduling 升為正式引用 **[Iyer & Druschel 2001]**(查證正確 venue = SOSP 2001 / SIGOPS OSR 35(5);原文誤記 USENIX ATC '04)、寫進 §2.3.1 prose + §9.2 參考表,另兩條 vague 條目(readahead.c notes、NAND flash series)刪除。全文掃過無其他 term_sweep 標題汙染。
+### Round 1 — 完成狀態（carry forward；詳版見 git history）
+- [x] **P1 結構性**：R1 兩模型對稱、R2 warm 模型內歸因、R3 不確定性（10-seed sweep）、R5 收斂 novelty + layout rewriter 定位
+- [x] **P2 內容**：R4（採出路 b：scope 到 commodity desktop NVMe）、S1（三槓桿 ablation，§5.4.1 + 圖 17）、S3（sub-WS RAM-pressure，§6.2.2 + 圖 16）
+- [ ] **P2 仍 open**：S2（ra sweep）→ 本輪 SR1 重申；S4（競爭 baseline）→ 本輪 RR1 升為必改
+- [x] **P3 文字格式**：S5（intermediate-delivery sweep）、S7（0.35% 降溫）、S8（1c 淨價值澄清）、churn 規模統一、術語密度、標題 cost-accounting 定錨、圖 14 ‡ 標記
+- [x] **額外**：DB-size scaling（§6.2.5 + 圖 15）、資料可比性方法學（2f_slru 錨點）
 
-### Priority 3 — 文字與格式（~3 天）
-- [x] S5 中間 delivery 點 — **實跑 intermediate-delivery sweep**（async hint 後插 5/20/50 ms sleep 再 query；`tools/deliver_sweep.sh` + `--deliver-sleep-ms`；資料 `results/deliver_sweep/`）。結果**否證** R3 W5：hotset 在 sleep=0 就 100% 落地，Workload A 殘餘 `fq_async−fq_pread` gap（~165–196 µs）給 50 ms 也補不回（majflt 兩臂相同），故 async e2e 數字**非緊湊時序高估**、`fq_pread` 是 async 光等到不了的理想線。新 §3.5.1 + §6.4 bullet。
-- [x] S7 降溫 0.35% — Abstract + §2.1 改述為「B+tree fanout 的結構結果、非本研究發現」（§1 原已有此 framing）
-- [x] S8 澄清 1c 淨價值 — §6.1 bullet 3 + §4.1：給出**明確 net-win 三條件**（部署 prefetch ∧ 只能用 structural ∧ workload 夠傾斜），逐格證明本矩陣 **1c 沒有任何一格贏過 1a**（A 481 vs 525、B 504 vs 693、C 290 vs 334 µs），且「放大的 first-q %」是 baseline 被墊高的假象（pread 地板 212 vs 210 µs 幾乎相同）→ **誠實降級為探索性負面結果，預設用 1a**。
-- [x] 統一 churn 規模數字不一致 — 全文統一為 **50k（10 輪 × 5k，11 個 checkpoint ck0–ck10）**；順帶統一 robustness 軸數為 **5**
-- [x] 統一中英術語密度 — 政策「專業術語英文、非專業詞回中文」；`tools/term_sweep.py`（保護 code/連結 URL/標題/math）掃 **112 處**：measurement→量測、deployment→部署、comparison→比較、conclusion→結論、validation→驗證、framework→框架、isolation→隔離、magnitude→量級、recommendation→建議、experiment→實驗、預取→prefetch；並清掉替換後 CJK 間殘留空白。技術詞（kernel/page cache/prefetch/workload/baseline/B+tree/madvise…）保留英文。
-- [x] 標題改為點出 cost-accounting — 「SQLite Cold-Start Prefetch 的 Preprocessing Cost-Accounting：為何 first-query 改善 ≠ end-to-end 加速」
-- [x] 圖 14 內嵌並簡化（標「翻盤是否落在 noise 內」）— 已內嵌（§5.5）；**新增 ‡ 標記**：以 10-seed 跨-seed CI 標出「單一 workload 勝出但落在雜訊內」的格（A/B layers_5，CI 跨 0），footnote 指向 §6.2.4；caption 同步更新。圖已重生。
-
-### 額外完成（roadmap 外，2026-06-28）
-- **DB-size scaling robustness 軸（§6.2.5 + 圖 15）**：102 MB → ~1 GiB，A/B/C × 10 seed 跨-seed CI。first-query size-robust（18/18 cell）、warm-e2e 翻盤集中在窄域 C。**部分補強外部效度（CONSENSUS #4 的「單一 102 MB DB」一項，但不替代 R4 的 ARM/mobile）**。資料 `results/{size_1gb,seeds_1gb,stats/uncertainty_1gb.csv}`。
-- **資料可比性方法學**：以 `2f_slru` first-query 為跨-session 機器狀態錨點（全研究 ~96–127 µs、≥4 狀態群），明定「絕對 µs 只在同狀態群內比、跨批用相對量」（overall_results.md「資料可比性」+ §6.4）。
+### 觀察：本輪與既有 roadmap 的對齊
+本獨立 Round-2 審查**收斂於兩個仍 open 的項目**：**RR1 = S4**（競爭 baseline）、**SR1 = S2**（ra-sweep）。超出 Round 1 的新要求（RR2–RR5）全是 **text/framing**：收斂「首個」、Abstract 改用 cross-seed CI、framing 收斂到 commodity-NVMe、提升 access-frequency。**Round-1 的 CRITICAL（warm-process 會計）已清除。**
 
 ### 總估時
-- **Major Revision ≈ 5–7 週**
+- **Focused Major Revision ≈ 1.5–2.5 週**（RR1 一個實驗 + RR2–RR5 與 SR 多為改寫）
 
 ---
 
@@ -169,16 +153,16 @@
 
 | Severity | Priority | Revision Type |
 |---|---|---|
-| Critical | P1 | Required（R1, R2） |
-| Major | P1/P2 | Required（R3, R4, R5） |
-| Minor | P2/P3 | Suggested（S1–S8） |
+| Major（需實驗/威脅結論） | P1 | Required（RR1） |
+| Major（用詞/framing） | P1 | Required（RR2–RR5） |
+| Minor | P2/P3 | Suggested（SR1–SR8） |
 
 ---
 
 ## Closing
 
-本文方向有價值、核心 framing 與量測紀律值得肯定；但需實質重構「宣稱 vs 證據」的對齊，並補關鍵實驗。請逐條回應每位審稿人意見後重新投稿，修訂稿將再經一輪審查。
+修訂稿相對 Round 1 進步明顯：**Round-1 gating CRITICAL 已解除**，量測紀律、可重現性、ablation 的自我修正獲五人一致肯定，最穩健的核心結果（C × 2e_K10，−70% [−72,−69]、10/10 seed）經 adversarial stress-testing 仍成立。通往 Accept 的路徑短：**一個 competitive-baseline 實驗（RR1/S4）+ ra-sweep（SR1/S2）+ 收斂宣稱與 Abstract/framing 紀律**。請逐條回應每位審稿人意見後重新投稿，修訂稿將再經一輪審查。
 
 ---
 
-*本檔為 Phase 2 編輯綜整。Phase 1 的五份完整審稿報告未併入本檔（如需，可另行輸出）。所有綜整點均可回溯至 Phase 1 報告，無捏造。*
+*本檔為 Phase 2 編輯綜整（Round 2）。Phase 1 五份完整審稿報告未併入本檔；所有綜整點均可回溯至 Phase 1 報告，無捏造。*
