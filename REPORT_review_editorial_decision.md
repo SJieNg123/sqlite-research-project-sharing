@@ -143,7 +143,7 @@
 - [ ] R4 ARM sanity check 或全面 scope 到 desktop
 - [ ] S1 三槓桿 ablation
 - [ ] S2 ra sweep
-- [ ] S3 真 RAM pressure（cap < working set）
+- [x] S3 真 RAM pressure（cap < working set）— **sub-WS sweep**（`tools/ram_pressure.sh`、cap `{∞,16,12,8,6}M` = `{∞,.92,.69,.46,.35}×WS`，量 `delivery_pct`＝prefetch 殘留率）。發現：**targeted（2e_K10 112KB / 2e_K500 2MB）delivery 全程 100%、first-q 全程平 → RAM-robust by construction；2f_slru（dump=17.7MB=整個WS）delivery 隨 cap 線性塌（100→77→54→32→19%）、first-q 一跌破 100% 就直跳回 baseline（all-or-nothing）**。可量測下限 ~6M；C(WS 1.8MB)天生不敏感。新 §6.2.2 改寫 + 圖 16 + overall_results.md。
 - [ ] S4 競爭 baseline 對拼
 - [ ] S6 補/修引用
 

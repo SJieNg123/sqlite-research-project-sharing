@@ -911,20 +911,41 @@ DB 被持續 write（**50k mutation = 10 輪 × 5k**，在 11 個 checkpoint ck0
 (主面板 = layout orig;CSV 另含 vacuum/ta)。C 上 2e_K10_static 跨 11 個 checkpoint
 持平 ~82–86 µs;B 上沒有自然 hot leaves，access-pattern 與 structural 打平，但同樣不 decay。*
 
-#### 6.2.2 RAM pressure（cgroup MemoryMax=20M）
+#### 6.2.2 RAM pressure（cap 壓到 working set 以下）
 
-**DB ~102 MB、RAM 用 cgroup `MemoryMax=20M` 砍到 20 MB**（systemd-run --user --scope 套用）,first query 的 improvement **幾乎不受影響**:
-
-- **First query**：實驗量到「20M / unlimited」ratio **全部落在 0.95–1.07**(54 個 strategy×
-  workload × layout cell),因為 first query 只摸到少數 page、不在 reclaim path 上。
-- **為什麼 pressure 這麼小**：resident working set(2f hotset ~4.4k page ≈ **17 MB**)其實
-  **略小於** 20M cap,hotset 幾乎塞得下、eviction 有限。
+RAM pressure 的關鍵不是「cap 多小」，而是**cap 相對 working set 的位置**。本研究的 resident
+working set（跑完 100k ops 後 resident 的 page 數）量到 **A/B ≈ 4.4k page ≈ 17.3 MB、C ≈ 0.46k
+page ≈ 1.8 MB**。早期用的 `MemoryMax=20M` **在 A/B working set 之上**，所以 first-query 的
+「20M / unlimited」ratio 全部落在 **0.95–1.07**（圖 6）——那不是「prefetch 抗壓」，而是**根本沒施壓**。
 
 ![RAM-pressure heatmap (20 MB cgroup vs unlimited)](figures/out/06_ram_pressure_heatmap.png)
 
-*圖 6：把可用 RAM 砍到 20 MB（A/B/C × 3 layout × 6 strategy）。
-每 cell 的「20M / unlimited」async first-query ratio**全部落在 0.95–1.07**，memory
-pressure 幾乎不影響 first query(working set ~17 MB < 20M cap)。*
+*圖 6：cap=20 MB（> working set）時 async first-query 的「20M / unlimited」ratio 全落在 0.95–1.07
+——cap 在 working set 之上，沒有實質 reclaim。要看真壓力得把 cap 壓到 working set 以下（圖 16）。*
+
+**把 cap 沿 working set 以下逐級壓**（`{∞, 16M, 12M, 8M, 6M}` = `{∞, 0.92, 0.69, 0.46, 0.35}×WS`，
+workload A/B、量 `delivery_pct`＝prefetch 過的 page 在 first-query 前的 mincore 殘留率；
+`tools/ram_pressure.sh`、資料 [`results/ram_pressure/`](results/ram_pressure/)）後，**策略間出現極大分歧**：
+
+| 策略（hotset 大小） | delivery_pct：∞ → 16M → 12M → 8M → 6M | first-q：∞ → 受壓 | 結論 |
+|---|---|---|---|
+| **2e_K10**（112 KB） | 100 → 100 → 100 → 100 → 100% | 402 → ~360 µs（平） | **完全 robust** |
+| **2e_K500**（2.07 MB） | 100 → 100 → 100 → 100 → 100% | 179 → ~180 µs（平） | **完全 robust** |
+| **2f_slru**（17.7 MB＝整個 WS） | 100 → **77 → 54 → 32 → 19%** | 95 → **~490 µs（≈ baseline 502）** | **崩潰** |
+
+![RAM pressure：delivery_pct 與 first-q vs cap](figures/out/16_ram_pressure_sweep.png)
+
+*圖 16：cap 壓到 working set 以下。**上排 delivery_pct**：targeted（2e_K10 112 KB、2e_K500 2 MB）
+全程釘在 100%——hotset 比任何可用 cap 小好幾個量級、永遠不被 evict；**2f_slru（17.7 MB dump）的
+delivery 隨 cap 線性塌**（≈ cap/WS）。**下排 first-q（log）**：2f 一旦 delivery 跌破 100%（16M 起），
+first-q 就從 95 µs **直跳回 baseline（紅虛線）並維持**——「整碗端走」式 cache-dump 沒有 graceful
+degradation，是 all-or-nothing；targeted 則完全平。B（uniform）同形。*
+
+**結論（呼應全文主軸）**：在記憶體受限裝置上，**「小而準」的 targeted prefetch（≤2 MB hotset）對
+RAM pressure 是 robust by construction**——hotset 太小、reclaim 碰不到它，first-query 效益完整保留；
+而**「大而全」的 cache-dump（2f_slru，hotset＝整個 working set）一旦 RAM 低於 working set 就當場崩**，
+這正是行動/IoT 裝置最常見的情境。可用量測下限約 **6 MB（0.35×WS）**；4 MB 以下 cold gate 全排除、量不出。
+C（WS 僅 1.8 MB ≈ 量測下限）**無法以 cgroup 施壓 → 對 RAM pressure 天生不敏感**。
 
 #### 6.2.3 Multi-process MAP_SHARED
 

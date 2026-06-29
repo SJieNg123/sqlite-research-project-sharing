@@ -254,6 +254,7 @@
 ## RAM-pressure（cgroup MemoryMax=20M / unlimited 比值,async first-q）
 
 > 來源 [`results/ram20m/`](results/ram20m/summary.csv)(20M cgroup)÷ **同期(06-22)unconfined** baseline。比值近 1.0 → 壓力幾乎不影響。
+> ⚠️ **20M cap 在 working set(A/B ≈ 17.3 MB)之上 → 沒有實質施壓**，故比值近 1.0。要看真壓力見下方「sub-working-set sweep」。
 > ⚠️ 分母**必須是同 session** 的 unconfined run(群①);**勿** ÷ 現在的 `results/main`(06-24 重跑、群③、慢 ~15%)——那會得 ~0.85 的**機器狀態假象**,非壓力效應。詳見上方「資料可比性」。
 
 | workload×layout | layers_5 | layers_92 | 2d | 2e_K10 | 2e_K500 | 2f_slru |
@@ -267,6 +268,39 @@
 | C/orig | 1.00 | 1.00 | 0.99 | 0.98 | 1.01 | 1.01 |
 | C/vacuum | 1.00 | 1.00 | 1.00 | 1.01 | 1.00 | 1.00 |
 | C/ta | 0.99 | 1.01 | 0.99 | 1.00 | 1.00 | 1.00 |
+
+## RAM-pressure（sub-working-set sweep；cap 壓到 working set 以下）
+
+> 來源 [`results/ram_pressure/`](results/ram_pressure/analysis.csv)(`tools/ram_pressure.sh`,seed 1,layout orig,async)。
+> working set ≈ **A/B 17.3 MB、C 1.8 MB**。cap ladder `{∞,16M,12M,8M,6M}` = `{∞,0.92,0.69,0.46,0.35}×WS`。
+> **量 `delivery_pct`**（prefetch 過的 page 在 first-query 前的 mincore 殘留率）+ first-q。可量測下限 ≈ 6M；4M 以下 cold gate 全排除。
+> hotset 大小決定誰被壓到：2e_K10 ≈ 112 KB、2e_K500 ≈ 2.07 MB、**2f_slru ≈ 17.7 MB（＝整個 WS）**。
+
+**delivery_pct（%，async,first-query 前 mincore 殘留率）**
+
+| workload × strategy | ∞ | 16M (0.92×) | 12M (0.69×) | 8M (0.46×) | 6M (0.35×) |
+|---|--:|--:|--:|--:|--:|
+| A 2e_K10 | 100 | 100 | 100 | 100 | 100 |
+| A 2e_K500 | 100 | 100 | 100 | 100 | 100 |
+| **A 2f_slru** | 100 | **77.4** | **54.3** | **32.2** | **18.7** |
+| B 2e_K10 | 100 | 100 | 100 | 100 | 100 |
+| B 2e_K500 | 100 | 100 | 100 | 100 | 100 |
+| **B 2f_slru** | 100 | **77.9** | **55.9** | **31.2** | **17.1** |
+
+**first-query latency（µs,async）**
+
+| workload × strategy | ∞ | 16M | 12M | 8M | 6M | baseline |
+|---|--:|--:|--:|--:|--:|--:|
+| A 2e_K10 | 402 | 362 | 353 | 372 | 357 | 502 |
+| A 2e_K500 | 179 | 183 | 178 | 180 | 179 | 502 |
+| **A 2f_slru** | **95** | **490** | **487** | **484** | **489** | 502 |
+| B 2e_K10 | 408 | 411 | 405 | 404 | 406 | 723 |
+| B 2e_K500 | 452 | 453 | 448 | 451 | 451 | 723 |
+| **B 2f_slru** | **96** | **741** | **735** | **724** | **716** | 723 |
+
+> 讀法：**targeted（2e_K10/2e_K500）delivery 全程 100%、first-q 全程平** → hotset 太小、reclaim 碰不到 → RAM-robust by construction。
+> **2f_slru（dump＝整個 WS）delivery 隨 cap 線性塌（≈ cap/WS）**，且 first-q 一旦 delivery 跌破 100% 就**直跳回 baseline 並維持**（all-or-nothing,無 graceful degradation）。
+> 即「小而準 > 大而全」在記憶體受限裝置上成立。圖見 `figures/out/16_ram_pressure_sweep.png`。
 
 ## Churn-evolution（layout orig,static t=0 hotset,first-q µs;CSV 另含 vacuum/ta）
 
