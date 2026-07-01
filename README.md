@@ -5,17 +5,24 @@ SQLite 冷啟動後第一筆 query 特別慢:OS page cache 是空的,走訪 B+tr
 卻散布全檔,sequential readahead 救不了。
 
 本 repo 研究:**在第一筆 query 之前先把這些關鍵 page prefetch 進 cache**,
-能省多少 cold-start latency,以及哪種「選頁策略 × DB layout × workload」組合最有效。
+能省多少 cold-start latency、**把 prefetch 自身的 preprocessing 成本也算進 end-to-end**,
+以及哪種「選頁策略 × DB layout × workload」組合最有效。
 
 > 完整論文:**[REPORT.md](REPORT.md)** / [REPORT.pdf](REPORT.pdf)
 > 結果矩陣:[overall_results.md](overall_results.md)　策略目錄:[overall_strategies.md](overall_strategies.md)　策略怎麼測:[strategies_explained.md](strategies_explained.md)　workload 定義:[overall_workloads.md](overall_workloads.md)
 
 ## 核心發現(摘要)
 
-- **載對 5 個 page 就砍掉一半 cold-start**:Zipfian workload A 上 `layers_5`(按 file offset 取前 5 個 interior)−54%;不是越多越好(U 型曲線)。
-- **選頁順序決定一切**:有上一輪 query log 時,按 access count 排序的 `2e_K10` 在 workload C 上只用 ~14 個 `madvise` 就 −84%,優於 dump 整個 working set 的 `2f_slru`(−77%)。
-- **沒有 universal 最佳解**:配方依 workload 而定。Type-aware layout 在 A 上把效益放大到 −69%,但在 B 上反而 +8%。
+baseline cold first-query @orig:A 529 / B 760 / C 1096 µs。
+
+- **first-query 變快 ≠ cold-start 真的變快(本研究主軸)**:載整份 working set 的 `2f_slru` first-query 最低(−76~89%),但它要付 ~0.8–7 ms 的 deliver 成本,反讓 end-to-end cold start **慢一個量級**——這個 trade-off 過去的 prefetch 研究長期忽略。
+- **「小而準」勝過「大而全」**:targeted prefetch 只用極少 syscall 就拿 first-query −22~81%;在 app 已在跑、handle 已開的 **warm-process** 部署下三個 workload 的 e2e 都改善。最佳是 C 上的 `2e_K10`(interior + 10 個 hot leaf,共 ~14 頁),把 cold-start 從 1096 µs 壓到 291 µs(**−73%**)。
+- **贏在「選對頁」不是「載很多頁」**:三槓桿 ablation 顯示 C 的效益來自 **access-frequency**(隨機挑同型別 10 個 leaf 只 −2%、照頻率挑 −40%);uniform 的 B 沒有自然 hot leaf,全靠 **page-type**(interior)。N 也不是越多越好——N=1 反而比 baseline 慢(U 型曲線)。
+- **跨 seed 才算數**:用 10 個 random seed 校正單一抽樣偏差——access-pattern targeted 的 warm e2e(A `2e_K10` −36%、B `2d` −25%、C `2e_K10` −70%)跨 seed **robust**(95% CI 不跨 0);但 structural `layers_5` 在 A/B 落在雜訊內(tie),不可恃。
+- **結論在五條 robustness 軸下穩定**:50k write churn、sub-working-set RAM pressure、多 process cadence re-warm、10-seed sweep、DB 放大 10×(102 MB→~1 GiB)。RAM 壓力下小 hotset(≤2 MB)的 targeted 全程 100% delivery、first-q 不受影響,只有 `2f_slru`(整份 WS)在 cap 低於 working set 時崩潰。
+- **type-aware layout 非淨贏**:把 interior 搬到 file head 雖降 first-q,卻推高 baseline(A +31% / B +4%)又讓 hotset 變大,實測沒有任何一格贏過原始 layout——**預設用原始 layout(1a)+ access-pattern prefetch** 即可。
 - **多 process 免費放大**:`PRAGMA mmap_size` 開 `MAP_SHARED` 後,一個 process prefetch,所有共用同一 DB 的 process 都受惠。
+- **範圍界定**:所有量測在單台 commodity x86 桌機(Ryzen 9950X)+ NVMe SSD、單一 Linux kernel;行動裝置 / IoT 是 motivating context、非評估平台,絕對數字不外推到 ARM/UFS/eMMC。
 
 完整數字與每個 workload 的最佳組合見 [overall_results.md](overall_results.md)。
 
@@ -40,8 +47,11 @@ strategies/
   access/                  # 2d / 2e access-pattern prefetch + gen_hotleaves
 
 workloads/                 # workload_a/b/c/z.txt(各 10 萬筆)+ churn write 流
-results/                   # 所有實驗輸出(main / churn / cadence / nsweep / ram20m / ...)
-figures/                   # 論文用圖
+results/                   # 所有實驗輸出(main / churn / cadence / nsweep_dense / ksweep /
+                           #   ram_pressure / size_1gb / seeds / stats / ablation / competitive / ...)
+figures/                   # 論文用圖(01–18)+ plot_utils.py
+tools/                     # 掃描/統計腳本(ram_pressure / run_seed_sweep / stats_uncertainty /
+                           #   ablation_levers / competitive_baseline / deliver_sweep)
 legacy/                    # 已退場的早期實驗(multiprocess / prefetch_vacuum / calibration)
 ```
 
